@@ -1,0 +1,21 @@
+appname=basemetas-fileview
+version=0.5.5
+display_name=FileView 预览
+desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
+source=thirdparty
+platform=all
+
+maintainer=BaseMetas
+maintainer_url=https://fileview.basemetas.cn
+distributor=bug-yu
+distributor_url=https://github.com/bug-yu
+
+os_min_version=1.2.0
+
+desktop_uidir=ui
+desktop_applaunchname=basemetas-fileview.view
+
+changelog=0.5.5：修复 Excel/CSV 一直转圈（前端唯一一处 credentials:'omit' 导致文件请求不带登录凭据、被统一网关拦下），在网关层改写回同源默认值。
+
+ctl_stop=true
+checkport=false

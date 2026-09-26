@@ -1,0 +1,28 @@
+# ===== 构建产物 =====
+# 安装包是构建产物，不含在仓库里；用 fpk/build.sh 或 build.bat 现场生成
+*.fpk
+
+# ===== 打包工具二进制 =====
+fpk/tools/fnpack.exe
+fpk/tools/fnpack
+
+# ===== Python =====
+__pycache__/
+*.pyc
+
+# ===== 本地专属文件（含内部信息，绝不提交）=====
+# 脱敏脚本里带着本机的旧值对照表，只在本机用一次
+fpk/tools/sanitize.py
+# 内部关键词词表（供 scan_privacy.py --words 使用）
+fpk/tools/privacy-words.txt
+# 临时扫描报告 / 环境探测输出
+fpk/tools/privacy-scan.txt
+fpk/tools/env-probe.txt
+fpk/tools/privacy-scan-report.txt
+fpk/tools/privacy-scan-report.txt.err
+# 脱敏前的原文备份
+.sanitize-backup/
+# 字体：多为商业授权字体（微软/方正/华文等），且体积巨大，绝不进仓库。
+# 这些是装到飞牛「应用数据目录 /vol{n}/@appdata/basemetas-fileview/fonts/」用的，
+# 属于本机资产，不是源码。
+fonts/

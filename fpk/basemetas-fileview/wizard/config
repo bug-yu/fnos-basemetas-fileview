@@ -1,0 +1,27 @@
+[
+  {
+    "stepTitle": "存储卷",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "修改后需重新启动本应用才能生效。已挂载的存储卷以只读方式提供，不会改动其中的文件。"
+      },
+      {
+        "type": "text",
+        "field": "wizard_volumes",
+        "label": "允许预览的存储卷",
+        "initValue": "/vol1,/vol2",
+        "rules": [
+          {
+            "required": true,
+            "message": "请至少填写一个存储卷，例如 /vol1"
+          },
+          {
+            "pattern": "^\\s*/vol[0-9]+\\s*(,\\s*/vol[0-9]+\\s*)*$",
+            "message": "格式如 /vol1 或 /vol1,/vol2"
+          }
+        ]
+      }
+    ]
+  }
+]

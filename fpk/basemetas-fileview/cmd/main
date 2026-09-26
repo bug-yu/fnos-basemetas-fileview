@@ -1,0 +1,72 @@
+#!/bin/bash
+# 应用运行控制脚本
+# start / stop 的实际启停动作由框架按 config/resource 里的 docker-project 资源执行，
+# 这里主要做两件事：
+#   1. start 前做「安装完整性预检」
+#   2. status 如实回报容器状态
+
+ENGINE="basemetas-fileview-engine"
+GATEWAY="basemetas-fileview-gateway"
+
+COMPOSE="${TRIM_APPDEST}/docker/docker-compose.yaml"
+NGINXCONF="${TRIM_APPDEST}/docker/nginx.conf"
+
+is_running() {
+  docker inspect "$1" 2>/dev/null | grep -q '"Status": "running"'
+}
+
+# 安装完整性检查
+# 背景（2026-09-26 踩坑）：安装包内的 app.tgz 若未释放到 ${TRIM_APPDEST}，
+# docker 会因 bind 挂载源不存在而报
+#   "not a directory: Are you trying to mount a directory onto a file"
+# 这种报错完全看不出真正原因。这里提前判断并给出人话提示。
+files_ok() {
+  [ -n "$TRIM_APPDEST" ] && [ -f "$COMPOSE" ] && [ -f "$NGINXCONF" ]
+}
+
+report_incomplete() {
+  {
+    echo "应用文件不完整，无法启动。"
+    echo "缺少：${TRIM_APPDEST}/docker/docker-compose.yaml 或 docker/nginx.conf"
+    echo "原因通常是安装未完成（安装包里的 app.tgz 没有被释放到应用目录），而不是配置错误。"
+    echo "请卸载本应用后重新安装。排查命令： ls -la ${TRIM_APPDEST}/docker/"
+  } > "$TRIM_TEMP_LOGFILE" 2>/dev/null
+}
+
+case "$1" in
+  start)
+    if ! files_ok; then
+      report_incomplete
+      exit 1
+    fi
+    # 保证自定义字体目录存在（compose 把 ${TRIM_PKGVAR}/fonts 挂到容器 /usr/local/share/fonts）
+    if [ -n "${TRIM_PKGVAR:-}" ]; then
+      mkdir -p "$TRIM_PKGVAR/fonts" 2>/dev/null
+    else
+      {
+        echo "提示：环境变量 TRIM_PKGVAR 为空，自定义字体目录可能未按预期挂载。"
+        echo "本应用不影响使用（容器内置免费思源字体）；若要装商用字体请检查该变量。"
+      } > "$TRIM_TEMP_LOGFILE" 2>/dev/null
+    fi
+    exit 0
+    ;;
+
+  stop)
+    exit 0
+    ;;
+
+  status)
+    if ! files_ok; then
+      exit 3
+    fi
+    if is_running "$ENGINE" && is_running "$GATEWAY"; then
+      exit 0
+    fi
+    exit 3
+    ;;
+
+  *)
+    echo "Unknown command: $1" > "$TRIM_TEMP_LOGFILE"
+    exit 1
+    ;;
+esac

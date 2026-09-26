@@ -1,0 +1,31 @@
+[
+  {
+    "stepTitle": "存储卷",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "FileView 需要以「同名同路径」只读挂载存储卷，才能预览其中的文件。请填写要允许预览的存储卷根路径，多个用英文逗号分隔。安装后可在本应用的「设置」中修改。"
+      },
+      {
+        "type": "text",
+        "field": "wizard_volumes",
+        "label": "允许预览的存储卷",
+        "initValue": "/vol1,/vol2",
+        "rules": [
+          {
+            "required": true,
+            "message": "请至少填写一个存储卷，例如 /vol1"
+          },
+          {
+            "pattern": "^\\s*/vol[0-9]+\\s*(,\\s*/vol[0-9]+\\s*)*$",
+            "message": "格式如 /vol1 或 /vol1,/vol2"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "预览服务仅能读取这些卷中的文件，且为只读挂载，不会修改或删除任何文件。"
+      }
+    ]
+  }
+]

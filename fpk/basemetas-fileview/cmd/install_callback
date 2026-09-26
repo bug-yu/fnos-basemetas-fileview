@@ -1,0 +1,44 @@
+#!/bin/bash
+# 按安装向导填写的存储卷，重建 docker-compose.yaml 里的挂载段。
+# 任何异常都不影响安装流程：失败时保留默认的 /vol1、/vol2。
+
+COMPOSE="${TRIM_APPDEST}/docker/docker-compose.yaml"
+VOLUMES="${wizard_volumes:-/vol1,/vol2}"
+
+[ -f "$COMPOSE" ] || exit 0
+
+BLOCK=""
+OLD_IFS="$IFS"
+IFS=','
+for v in $VOLUMES; do
+  v="$(echo "$v" | tr -d '[:space:]')"
+  case "$v" in
+    /vol*|\/volume*) ;;
+    *) continue ;;
+  esac
+  case "$v" in
+    *:*) continue ;;
+  esac
+  BLOCK="${BLOCK}      - ${v}:${v}:ro
+"
+done
+IFS="$OLD_IFS"
+
+[ -n "$BLOCK" ] || exit 0
+
+TMP="${COMPOSE}.new"
+if awk -v block="$BLOCK" '
+  /## VOLUMES_BEGIN/ { print; printf "%s", block; skip=1; next }
+  /## VOLUMES_END/   { skip=0 }
+  skip != 1 { print }
+' "$COMPOSE" > "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
+  mv "$TMP" "$COMPOSE"
+fi
+
+# 建好自定义字体目录，让用户有个明确的地方放字体
+# （compose 里已把 ${TRIM_PKGVAR}/fonts 挂到容器的 /usr/local/share/fonts）
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+  mkdir -p "$TRIM_PKGVAR/fonts" 2>/dev/null
+fi
+
+exit 0

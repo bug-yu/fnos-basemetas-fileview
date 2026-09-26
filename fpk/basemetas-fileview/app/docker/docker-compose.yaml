@@ -1,0 +1,41 @@
+services:
+
+  # 预览引擎本体
+  fileview:
+    image: basemetas/fileview:1.5.2
+    container_name: basemetas-fileview-engine
+    restart: unless-stopped
+    volumes:
+      # 下面两行由安装向导按你填写的存储卷自动重建，请勿删除 BEGIN / END 标记行
+      # ## VOLUMES_BEGIN
+      - /vol1:/vol1:ro
+      - /vol2:/vol2:ro
+      # ## VOLUMES_END
+      # 自定义字体目录（官方机制）：
+      #   镜像只内置了免费的中文思源字体 + 部分英文字体，不含仿宋/宋体/黑体等需授权的字体，
+      #   所以部分文档预览时字体与原稿不一致。
+      #   官方做法就是把宿主目录挂到容器的 /usr/local/share/fonts。
+      #   这里挂在应用的**数据目录**下（@appdata），卸载重装、升级都不会丢。
+      #   放入 ttf / ttc / otf 后重启本容器即可生效，见 README「装中文字体」一节。
+      - "${TRIM_PKGVAR}/fonts:/usr/local/share/fonts:ro"
+    environment:
+      - TZ=Asia/Shanghai
+
+  # 统一网关适配层：监听 Unix Socket，转发给 FileView
+  gateway:
+    image: nginx:alpine
+    container_name: basemetas-fileview-gateway
+    restart: unless-stopped
+    # umask 000 让生成的 app.sock 可被网关进程连接
+    command: ["sh", "-c", "umask 000 && exec nginx -g 'daemon off;'"]
+    volumes:
+      # ⚠️ 这里挂的是**整个 docker 目录**，而不是单个 nginx.conf 文件。
+      # 原因（2026-09-26 踩坑）：文件级挂载时，只要宿主上那个文件不存在，
+      # Docker 会自动把它建成一个**空目录**，然后挂到 nginx 的 default.conf（是个文件）上，
+      # 直接报 `not a directory: Are you trying to mount a directory onto a file`，
+      # 容器起不来。改成目录级挂载后，即使文件缺失也只是 nginx 少一份配置，不会挂载失败。
+      # nginx 会自动加载 conf.d/*.conf —— 我们的配置文件名是 nginx.conf，正好被加载。
+      - "${TRIM_APPDEST}/docker:/etc/nginx/conf.d:ro"
+      - "${TRIM_APPDEST}:/app/target:rw"
+    environment:
+      - TZ=Asia/Shanghai
