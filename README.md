@@ -244,6 +244,10 @@ bash tools/fv-docker-doctor.sh
 
 **修法（由轻到重，先试前面的）**：
 
+> 💡 **如果是断电 / 异常重启之后出现的，直接从第 4 步（重启 daemon）开始。**
+> Docker 启动时会用 `overlay2` 目录里的实际内容重建层索引，断电造成的悬挂引用
+> 往往这一次重启就自愈了，比反复拉镜像省事。
+
 ```bash
 # 1. 直接重试安装（若是瞬时问题，这一步就好了）
 
@@ -255,12 +259,23 @@ docker pull basemetas/fileview:1.5.2
 docker rmi -f nginx:alpine basemetas/fileview:1.5.2
 docker pull nginx:alpine && docker pull basemetas/fileview:1.5.2
 
-# 4. 还不行 → 重启 daemon，让它重建内容库索引
+# 4. 还不行 / 断电之后 → 重启 daemon，让它重建内容库索引
 systemctl restart docker
+docker images && docker ps -a        # 看看恢复成什么样
 docker pull nginx:alpine && docker pull basemetas/fileview:1.5.2
 
 # 5. 还不行 → 清掉无标签的悬挂层（相对安全）
 docker image prune -f
+```
+
+**断电之后还应该顺手看一眼这两样**（不只是 Docker 的事）：
+
+```bash
+# 文件系统有没有被写坏 —— 有 I/O error / btrfs 报错就别再折腾 Docker，先处理存储
+dmesg | grep -iE 'I/O error|btrfs|ext4|xfs|corrupt' | tail -30
+
+# 其它应用有没有被牵连
+docker ps -a --format '{{.Names}}\t{{.Status}}'
 ```
 
 > ⚠️ **不要一上来就 `docker system prune -a`**：它会删掉**所有未被容器使用的镜像**，包括你 NAS 上其它应用的 —— 那些应用下次启动会重新拉一遍，离线或镜像源不通时直接起不来。只有确认磁盘满了、且愿意承担这个代价时再用。
