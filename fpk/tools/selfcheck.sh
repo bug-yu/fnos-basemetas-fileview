@@ -89,6 +89,40 @@ fv_sync_volumes "" >/dev/null
 after="$(md5sum "$TRIM_APPDEST/docker/docker-compose.yaml" | cut -d' ' -f1)"
 [ "$before" = "$after" ] && echo "   ✅ 幂等" || { echo "   ❌ 非幂等"; FAILED=1; }
 
+echo
+echo "== 单文件大小上限（MAXSIZE 标记块）验证 =="
+wizard_max_file_mb=""
+echo "  模板默认值 -> [$(fv_compose_maxsize)]   期望 [1024]"
+[ "$(fv_compose_maxsize)" = "1024" ] || { echo "   ❌ 模板默认值不对"; FAILED=1; }
+
+echo "-- 向导填 512 保存 --"
+wizard_max_file_mb=512
+fv_sync_volumes "/vol1,/vol3" >/dev/null
+sed -n '/## MAXSIZE_BEGIN/,/## MAXSIZE_END/p' "$TRIM_APPDEST/docker/docker-compose.yaml" | sed 's/^/   /'
+[ "$(fv_compose_maxsize)" = "512" ] || { echo "   ❌ 向导值未写入"; FAILED=1; }
+[ "$(fv_load_maxsize_state)" = "512" ] || { echo "   ❌ 上限未持久化"; FAILED=1; }
+
+echo "-- 模拟升级（compose 被模板覆盖）+ 升级回调（拿不到向导变量）--"
+wizard_max_file_mb=""
+cp "$BASE/app/docker/docker-compose.yaml" "$TRIM_APPDEST/docker/docker-compose.yaml"
+fv_sync_volumes "" >/dev/null
+[ "$(fv_compose_maxsize)" = "512" ] \
+  && echo "   ✅ 升级后上限已按持久化设置恢复为 512" \
+  || { echo "   ❌ 升级后上限被覆盖成 $(fv_compose_maxsize)"; FAILED=1; }
+
+echo "-- 非法输入应回退上次保存的值（关键是绝不能写出非数字，否则引擎容器起不来）--"
+for bad in abc "" 0 "1e3" "-5" "102401" "999999999"; do
+  wizard_max_file_mb="$bad"
+  fv_sync_volumes "" >/dev/null
+  got="$(fv_compose_maxsize)"
+  case "$got" in
+    ''|*[!0-9]*) echo "   ❌ 输入 [$bad] 写出了非数字 [$got]"; FAILED=1 ;;
+    *) echo "   输入 [${bad:-空}] -> [$got]  OK" ;;
+  esac
+done
+wizard_max_file_mb=""
+fv_sync_volumes "" >/dev/null
+
 echo "-- 同步日志 --"
 sed 's/^/   /' "$TRIM_PKGVAR/fv-volumes.log" 2>/dev/null
 

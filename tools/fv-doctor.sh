@@ -203,6 +203,35 @@ if command -v docker >/dev/null 2>&1; then
       VERDICT+=("引擎容器读不到 $TESTFILE")
     fi
   fi
+
+  # 5c. 单文件大小上限 —— 「文件转换失败 413」的真因就在这里
+  # 引擎预览服务自带一道体积闸门 max-file-size-mb（默认 100），超过的文件在**转换之前**
+  # 就被直接拒绝，接口返回 HTTP 413「文件过大」，前端把它显示成「文件转换失败 413」，
+  # 看起来像转换器坏了，其实和转换器、nginx、网络都无关。
+  say "5c. 单文件大小上限（超过就提示「文件转换失败 413」）"
+  MAXMB="$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$ENGINE" 2>/dev/null \
+           | sed -n 's/^FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB=\([0-9]\{1,\}\)$/\1/p' | head -n 1)"
+  if [ -n "$MAXMB" ]; then
+    inf "容器实际生效：${MAXMB} MB（来自环境变量 FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB）"
+  else
+    MAXMB=100
+    inf "容器里没设这个环境变量 → 用引擎自带默认值 100 MB"
+    inf "  → 任何超过 100 MB 的文件都会被拒绝。0.5.20 起本应用默认设为 1024 MB，"
+    inf "     这里没读到说明装的是 0.5.19 或更早，或者容器还没按新配置重建。"
+  fi
+  if [ -n "$TESTFILE" ] && [ -f "$TESTFILE" ]; then
+    FSZ="$(stat -c '%s' "$TESTFILE" 2>/dev/null || echo 0)"
+    FMB=$(( FSZ / 1024 / 1024 ))
+    inf "被测文件大小：${FMB} MB"
+    if [ "$FSZ" -gt 0 ] && [ "$FSZ" -gt "$(( MAXMB * 1024 * 1024 ))" ]; then
+      bad "文件超过上限 → 引擎会在转换前直接拒绝（413）"
+      inf "  → 前端显示的就是「文件转换失败 413」。"
+      inf "  → 修法：应用「设置」→ 预览限制 → 把上限调大（0.5.20 起可调，保存后自动重建容器）"
+      VERDICT+=("$TESTFILE（${FMB}MB）超过单文件大小上限 ${MAXMB}MB")
+    else
+      ok "文件未超过上限"
+    fi
+  fi
 else
   inf "（跳过：没有 docker 命令）"
 fi

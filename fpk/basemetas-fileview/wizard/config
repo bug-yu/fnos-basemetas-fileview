@@ -29,6 +29,35 @@
     ]
   },
   {
+    "stepTitle": "预览限制",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "预览引擎自带一道体积闸门：超过上限的文件会在转换之前被直接拒绝，前端提示「文件转换失败 413」。这不是转换器故障，按需要调大即可。"
+      },
+      {
+        "type": "text",
+        "field": "wizard_max_file_mb",
+        "label": "单文件预览大小上限（MB）",
+        "initValue": "1024",
+        "rules": [
+          {
+            "required": true,
+            "message": "请填写一个数字，例如 1024"
+          },
+          {
+            "pattern": "^\\s*[0-9]{1,6}\\s*$",
+            "message": "只能填数字（单位 MB），例如 1024"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "默认 1024（即 1 GB）。\n\nPDF、图片、代码等由浏览器端渲染，调大基本不增加服务端负担；Word/Excel/PPT/CAD/OFD 需要服务端转换，上限过大时预览大文件会明显吃 CPU 和内存，请按 NAS 的内存情况取舍。\n\n改完保存会自动重建容器生效，不需要重装应用。"
+      }
+    ]
+  },
+  {
     "stepTitle": "逐用户权限校验",
     "items": [
       {

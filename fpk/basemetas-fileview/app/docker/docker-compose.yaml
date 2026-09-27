@@ -20,6 +20,20 @@ services:
       - "${TRIM_PKGVAR}/fonts:/usr/local/share/fonts:ro"
     environment:
       - TZ=Asia/Shanghai
+      # 单文件预览大小上限（MB）—— 超过它的文件会在**转换前**被引擎直接拒绝，
+      # 接口返回 HTTP 413「文件过大」，前端只显示「文件转换失败 413」，
+      # 看起来像转换器坏了，其实是一道体积闸门。
+      #
+      # 为什么用环境变量而不是挂配置文件：
+      #   FileView 的 StorageConfig 是 @ConfigurationProperties(prefix="fileview.preview.storage")，
+      #   Spring Boot 里环境变量的优先级高于包内 application.yml；而且不需要知道镜像里
+      #   application.yml 的确切路径（挂错路径会被 docker 建成空目录，反而让容器起不来）。
+      #   变量名按 Spring Boot 规则换算：点→下划线、去掉连字符、转大写。
+      #
+      # 下面一行由安装向导按你填写的数值自动重建，请勿删除 BEGIN / END 标记行
+      # ## MAXSIZE_BEGIN
+      - FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB=1024
+      # ## MAXSIZE_END
 
   # 统一网关适配层：监听 Unix Socket，转发给 FileView
   gateway:

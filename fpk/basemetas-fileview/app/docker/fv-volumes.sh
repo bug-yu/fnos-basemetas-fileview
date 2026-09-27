@@ -198,6 +198,108 @@ fv_write_volumes() {
 }
 
 # ---------------------------------------------------------------------------
+# 2b. 单文件预览大小上限（FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB）
+# ---------------------------------------------------------------------------
+# 为什么需要这个开关（2026-09-27 实测定位，源码级结论）：
+#   FileView 预览服务里有个硬门槛 max-file-size-mb，**默认 100（MB）**。
+#   超过它的文件在**转换之前**就被直接拒绝：
+#       fileview-preview …/service/FilePreviewService.java
+#         long fileSize = file.length();
+#         long maxSize  = storageConfig.getMaxFileSizeBytes();
+#         if (fileSize > maxSize) throw FileViewException.of(ErrorCode.FILE_TOO_LARGE,
+#             String.format("文件大小 %.2f MB 超过限制 %.2f MB", …));
+#       …/common/exception/ErrorCode.java
+#         FILE_TOO_LARGE(30006, "文件过大", 413)
+#   于是 121MB 的 PDF 会拿到 HTTP 413，前端把它显示成「文件转换失败 413」——
+#   看起来像转换器故障，其实和转换器、nginx、网络都无关。
+#
+# 为什么用环境变量而不是挂配置文件：
+#   StorageConfig 是 @ConfigurationProperties(prefix = "fileview.preview.storage")，
+#   Spring Boot 中环境变量的优先级高于包内 application.yml；而且不用猜镜像里
+#   application.yml 的确切路径（挂错路径会被 docker 建成空目录，容器直接起不来，
+#   见 compose 里那段关于「文件级挂载」的注释）。
+#
+# ⚠️ 值必须严格校验：绑定的目标字段是 int。
+#    写进非数字或空值会让 Spring 启动时绑定失败 → **引擎容器起不来**，
+#    比不设这个开关严重得多。所以只接受纯数字，其余一律回退默认值。
+FV_MAXSIZE_DEFAULT=1024
+FV_MAXSIZE_MAX=102400          # 100 GB，防手滑的上限，不是技术上限
+FV_MAXSIZE_STATE="${TRIM_PKGVAR:-}/maxfilesize.conf"
+
+# 把任意输入规范成纯数字 MB；不合法返回空串（调用方回退默认值）
+fv_normalize_maxsize() {
+  local n
+  n="$(printf '%s' "${1:-}" | tr -d '[:space:]')"
+  [ -n "$n" ] || { echo ""; return 0; }
+  # 只要出现非数字字符就整个不采信 —— 宁可回退默认值，也不要「1e3 被截成 13」这种
+  # 看似成功、实则写进一个莫名其妙的数的情况。
+  case "$n" in
+    *[!0-9]*) echo ""; return 0 ;;
+  esac
+  n="$(printf '%s' "$n" | sed 's/^0*//')"        # 去前导零；全是 0 会变成空串
+  [ -n "$n" ] || { echo ""; return 0; }
+  # 位数太多就别交给 $(( )) 了（可能溢出），直接夹到上限
+  [ "${#n}" -le 6 ] || { echo "$FV_MAXSIZE_MAX"; return 0; }
+  n=$((10#$n))                                   # 10# 前缀：避免 0100 被当八进制
+  [ "$n" -ge 1 ] || { echo ""; return 0; }
+  [ "$n" -le "$FV_MAXSIZE_MAX" ] || n="$FV_MAXSIZE_MAX"
+  echo "$n"
+}
+
+fv_save_maxsize_state() {
+  [ -n "${TRIM_PKGVAR:-}" ] || return 0
+  mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+  printf '%s\n' "$1" > "$FV_MAXSIZE_STATE" 2>/dev/null
+  return 0
+}
+
+fv_load_maxsize_state() {
+  [ -n "${TRIM_PKGVAR:-}" ] && [ -r "$FV_MAXSIZE_STATE" ] || { echo ""; return 0; }
+  tr -cd '0-9' < "$FV_MAXSIZE_STATE" 2>/dev/null
+  return 0
+}
+
+# 重写 compose 里 MAXSIZE 标记块内的那一行
+fv_write_maxsize() {
+  local n="$1" tmp
+  [ -n "$n" ] || return 1
+  [ -f "$FV_COMPOSE" ] || return 1
+  if ! grep -q '## MAXSIZE_BEGIN' "$FV_COMPOSE" 2>/dev/null; then
+    fv_log "警告：compose 里找不到 MAXSIZE_BEGIN 标记，单文件大小上限未写入"
+    return 1
+  fi
+
+  tmp="${FV_COMPOSE}.ms"
+  if awk -v n="$n" '
+    /## MAXSIZE_BEGIN/ { print; printf "      - FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB=%s\n", n; skip=1; next }
+    /## MAXSIZE_END/   { skip=0 }
+    skip != 1 { print }
+  ' "$FV_COMPOSE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    if cmp -s "$tmp" "$FV_COMPOSE" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null
+      return 0
+    fi
+    mv "$tmp" "$FV_COMPOSE"
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+# 从 compose 里读出「期望的」大小上限（用于和容器实际 env 比对）
+fv_compose_maxsize() {
+  sed -n 's/.*FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB=\([0-9]\{1,\}\).*/\1/p' \
+    "$FV_COMPOSE" 2>/dev/null | head -n 1
+}
+
+# 从容器里读出「实际生效的」大小上限
+fv_container_maxsize() {
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+    basemetas-fileview-engine 2>/dev/null \
+    | sed -n 's/^FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB=\([0-9]\{1,\}\)$/\1/p' | head -n 1
+}
+
+# ---------------------------------------------------------------------------
 # 3. 写 .env —— 让命令行里手动 docker compose 也能正常工作
 # ---------------------------------------------------------------------------
 # 踩坑：直接在命令行 `docker compose up -d`，TRIM_APPDEST / TRIM_PKGVAR 为空，
@@ -299,7 +401,7 @@ fv_write_acl_conf() {
 #                                  少了的话没有「缺卷」可检测，必须无条件重建）
 #   none           只写文件，不动容器
 fv_sync_volumes() {
-  local raw="${1:-}" mode="${2:-ensure}" list
+  local raw="${1:-}" mode="${2:-ensure}" list ms
 
   [ -n "$raw" ] || raw="$(fv_load_state)"
   [ -n "$raw" ] || raw="auto"
@@ -322,6 +424,16 @@ fv_sync_volumes() {
   fi
   fv_write_env
   fv_materialize_env
+  # 单文件大小上限：向导里填了就用向导值，没填（或填了非法值）就沿用上次保存的
+  # （main start 这类时机拿不到向导变量，只能读状态文件）
+  ms="$(fv_normalize_maxsize "${wizard_max_file_mb:-}")"
+  [ -n "$ms" ] || ms="$(fv_load_maxsize_state)"
+  ms="$(fv_normalize_maxsize "$ms")"      # 状态文件被人手工改坏也要挡住
+  [ -n "$ms" ] || ms="$FV_MAXSIZE_DEFAULT"
+  fv_save_maxsize_state "$ms"
+  if fv_write_maxsize "$ms"; then
+    fv_log "单文件大小上限已同步：${ms} MB"
+  fi
   # 闸门开关：向导里填了就用向导值，没填就保持现值（main start 这类时机拿不到向导变量）
   fv_write_acl_conf "${wizard_acl_gate:-}"
 
@@ -520,6 +632,19 @@ fv_ensure_mounts() {
   actual_vols="$(fv_container_vols)"
   if [ "$actual_vols" != "$wanted_vols" ]; then
     fv_log "引擎容器挂载与期望不一致（容器=${actual_vols:-无} 期望=${wanted_vols}），重建容器"
+    fv_rebuild
+    return 0
+  fi
+
+  # ── 第一关之二：环境变量也要对得上 ───────────────────────────────────
+  # 单文件大小上限是通过环境变量注入的，而环境变量和 bind 挂载一样，
+  # 只在容器创建那一刻定死 —— 改完不重建容器就不生效。
+  # 这里补一道比对，顺便把「安装时框架先建容器、回调后写 compose」的时序差也兜住。
+  local want_ms actual_ms
+  want_ms="$(fv_compose_maxsize)"
+  actual_ms="$(fv_container_maxsize)"
+  if [ -n "$want_ms" ] && [ "$want_ms" != "$actual_ms" ]; then
+    fv_log "单文件大小上限不一致（容器=${actual_ms:-无} 期望=${want_ms}），重建容器"
     fv_rebuild
     return 0
   fi
