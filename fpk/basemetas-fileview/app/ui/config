@@ -72,10 +72,7 @@
         "py",
         "js"
       ],
-      "noDisplay": true,
-      "control": {
-        "accessPerm": "hidden"
-      }
+      "noDisplay": true
     }
   }
 }

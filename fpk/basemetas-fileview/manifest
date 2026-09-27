@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.18
+version=0.5.19
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.18：去掉应用设置里两处没意义的项目（隐藏「访问权限」标签页；入口设置里的「自定义 URL」改为不可编辑）。0.5.17：逐用户权限校验默认开启 —— 只有对该文件有读权限的人才能预览，没有权限返回 403；万一出现误拦，把 @appdata/basemetas-fileview/acl.conf 里的 mode 改成 log 即可退回「只记录不拦截」。0.5.15：新增逐用户权限校验闸门，不依赖官方开放 API。0.5.8：修复应用用户缺少 docker 权限导致新加的存储卷永远预览不了。0.5.7：修复卸载失败。0.5.6：修复网关容器重启循环、存储卷默认 auto。
+changelog=0.5.19：回退 0.5.18 对入口配置的改动 —— 那个字段管的是**入口的访问权限**，不是设置项的可见性；设错会让普通用户看不到入口，表现为其他用户预览不了、桌面访问也改不动。0.5.18：隐藏应用设置里的「访问权限」标签页（保留）。0.5.17：逐用户权限校验默认开启 —— 只有对该文件有读权限的人才能预览，没有权限返回 403；误拦时把 @appdata/basemetas-fileview/acl.conf 的 mode 改成 log 即可退回「只记录不拦截」。0.5.15：新增逐用户权限校验闸门，不依赖官方开放 API。0.5.8：修复应用用户缺少 docker 权限导致新加的存储卷永远预览不了。0.5.7：修复卸载失败。0.5.6：修复网关容器重启循环、存储卷默认 auto。
 
 ctl_stop=true
 checkport=false
