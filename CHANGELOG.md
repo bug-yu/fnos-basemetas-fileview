@@ -6,6 +6,28 @@
 
 ---
 
+## 0.5.7
+
+修复「docker 里容器已经没了，但应用中心卸载失败」的问题。
+
+### 修复
+
+- **卸载时报 `Request failed, please try again later`**
+  如果你曾经手动执行过 `docker compose up -d` 且没有指定 `-p basemetas-fileview`，
+  生成的容器 label 里的 compose project 名会脱离飞牛管理。
+  应用中心卸载时按自己的 project 名 `basemetas-fileview` 执行 `docker compose down`，
+  找不到对应工程，于是失败，但 `docker ps` 里容器其实已经被手动操作删掉了。
+  现在 `cmd/uninstall_init` 和 `cmd/uninstall_callback` 都先按**容器名**强删一次，
+  再按**项目名**幂等 down 一次，并清理宿主机残留的 `app.sock` / `docker/.env`，
+  让卸载流程能正常完成。
+
+### 新增
+
+- `tools/fv-uninstall-fix.sh` —— 针对当前已经卡住的卸载状态，在 NAS 上 root 执行，
+  按容器名强删、按项目名 down、备份并移除应用目录、重启应用中心服务刷新 UI。
+
+---
+
 ## 0.5.6
 
 本次修的是一个「应用看起来在跑、实际上预览全挂」的问题，以及存储卷配置的老毛病。

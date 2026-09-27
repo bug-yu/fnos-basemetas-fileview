@@ -1,2 +1,30 @@
 #!/bin/bash
+# uninstall_init：框架执行 docker compose down 之前先做容错清理。
+#
+# 背景（2026-09-27 踩坑）：用户手动 `docker compose up -d` 时若未指定
+# `-p basemetas-fileview`，生成的容器 label 里 project 名会脱离飞牛管理。
+# 应用中心再按自己的 project 名 `docker compose down` 时找不到工程，
+# 于是界面报 "Request failed"，卸载失败；但 `docker ps` 看容器其实已经干净。
+# 这里先按容器名强删一次，再按项目名 down 一次，把状态对齐。
+
+set +e
+
+PROJ="basemetas-fileview"
+COMPOSE_DIR="${TRIM_APPDEST}/docker"
+COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yaml"
+
+# 先按容器名删除，解决"脱离 project 管理"的残留（幂等，失败也继续）
+if command -v docker >/dev/null 2>&1; then
+  docker rm -f "${PROJ}-engine" "${PROJ}-gateway" 2>/dev/null || true
+fi
+
+# 再按项目名 down（飞牛框架随后也会 down，这里提前做一次让它幂等成功）
+if [ -f "$COMPOSE_FILE" ] && command -v docker >/dev/null 2>&1; then
+  docker compose -p "$PROJ" -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+fi
+
+# 清残留 socket / 环境文件（它们在宿主机目录里，不会被容器带走）
+rm -f "${TRIM_APPDEST}/app.sock" 2>/dev/null || true
+rm -f "${COMPOSE_DIR}/.env" 2>/dev/null || true
+
 exit 0

@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.6
+version=0.5.7
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.6：① 修复网关容器 Restarting 崩溃循环 —— /app/target 是宿主机 bind 挂载，app.sock 会跨重启残留，nginx 无法重复绑定同一 unix socket，启动前先清理；② 存储卷默认改为 auto，自动挂载本机全部 /volN，新增硬盘不再需要手工填；③ 保存设置后自动重建容器，改挂载即刻生效，不必重启应用；④ 自动生成 docker/.env，命令行手工 docker compose up -d 不再报 invalid spec。
+changelog=0.5.7：修复卸载失败。手动 docker compose up -d 未指定项目名 -p basemetas-fileview 时，容器会脱离飞牛管理，应用中心按原项目名 down 找不到工程而报 Request failed；卸载脚本现先做按容器名强删、再按项目名幂等 down，确保卸载能完成。0.5.6：① 修复网关容器 Restarting 崩溃循环；② 存储卷默认 auto；③ 保存设置自动重建容器；④ 自动生成 docker/.env。
 
 ctl_stop=true
 checkport=false

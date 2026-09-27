@@ -1,2 +1,22 @@
 #!/bin/bash
+# uninstall_callback：框架执行 docker compose down 之后做二次收尾。
+#
+# 双保险：即便框架 down 已经删掉容器，这里再按容器名/项目名各清一次，
+# 并删除宿主机上残留的 app.sock / .env，避免下次安装或升级受旧状态影响。
+
+set +e
+
+PROJ="basemetas-fileview"
+COMPOSE_FILE="${TRIM_APPDEST}/docker/docker-compose.yaml"
+
+if command -v docker >/dev/null 2>&1; then
+  docker rm -f "${PROJ}-engine" "${PROJ}-gateway" 2>/dev/null || true
+  if [ -f "$COMPOSE_FILE" ]; then
+    docker compose -p "$PROJ" -f "$COMPOSE_FILE" down --remove-orphans 2>/dev/null || true
+  fi
+fi
+
+rm -f "${TRIM_APPDEST}/app.sock" 2>/dev/null || true
+rm -f "${TRIM_APPDEST}/docker/.env" 2>/dev/null || true
+
 exit 0

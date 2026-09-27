@@ -118,6 +118,25 @@ bash tools/fv-repair.sh
 
 脚本会依次做：探测存储卷 → 重写 compose 挂载段 → 清理残留 `app.sock` → 重建容器 → 验证并打印状态；网关仍未起来时会直接把日志打出来。
 
+### 卸载失败（`Request failed`）
+
+如果你之前手动执行过 `docker compose up -d`（没有带 `-p basemetas-fileview`），容器会脱离飞牛的 compose project 管理。此时应用中心卸载按自己的项目名 `down` 找不到工程，就会报 `Request failed`，但 `docker ps` 看容器其实已经没了。
+
+**当前状态修复**：把本仓库的 `tools/fv-uninstall-fix.sh` 拷到 NAS，用 root 执行：
+
+```bash
+bash fv-uninstall-fix.sh
+```
+
+脚本会按容器名强删、按项目名幂等 down、备份并移除应用目录、重启应用中心服务刷新 UI。
+
+**以后避免**：不要直接 `docker compose up -d`；如必须调试，请用：
+
+```bash
+cd /vol1/@appcenter/basemetas-fileview/docker
+docker compose -p basemetas-fileview up -d
+```
+
 ### 自定义字体
 
 预览服务只内置免费的中文思源字体和部分英文字体，不含需授权商用的字体（仿宋、宋体、微软雅黑等）。本包已把字体目录挂到应用数据目录（卸载/升级不丢）：
@@ -157,7 +176,7 @@ build.bat
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.6`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.7`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -172,7 +191,8 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
-| **0.5.6** | 修复网关容器无限重启（残留 `app.sock`）；存储卷默认 `auto` 自动挂载全部 `/volN`；保存设置即自动重建容器；新增 `tools/fv-repair.sh` |
+| **0.5.7** | 修复卸载失败（手动 `docker compose up -d` 未指定项目名导致容器脱离管理）；新增 `tools/fv-uninstall-fix.sh` 用于修复已卡住的卸载状态 |
+| 0.5.6 | 修复网关容器无限重启（残留 `app.sock`）；存储卷默认 `auto` 自动挂载全部 `/volN`；保存设置即自动重建容器；新增 `tools/fv-repair.sh` |
 | 0.5.5 | 修复 Excel / CSV 打开后无限转圈（网关层改写前端 `credentials: 'omit'`） |
 | 0.5.4 | 支持自定义字体（挂到 `${TRIM_PKGVAR}/fonts`） |
 | 0.5.3 | 入口精简为只保留「用 FileView 打开」 |
