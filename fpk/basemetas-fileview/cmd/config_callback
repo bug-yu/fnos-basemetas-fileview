@@ -1,42 +1,24 @@
 #!/bin/bash
-# 与 install_callback 逻辑一致：在应用设置里改存储卷后同样重建挂载段。
+# 在应用「设置」里改存储卷后：重建挂载段 + **重建容器**。
+#
+# ⚠️ 第二步是重点（2026-09-26 踩坑）：
+#   只改 docker-compose.yaml 是不够的 —— bind 挂载不会在运行中的容器里生效，
+#   docker restart 也不行，必须重建容器。而飞牛框架保存设置后不会重建容器，
+#   所以这一步必须自己做，否则就是「设置里明明有 /vol3，预览还是报文件不存在」。
 
-COMPOSE="${TRIM_APPDEST}/docker/docker-compose.yaml"
-VOLUMES="${wizard_volumes:-/vol1,/vol2}"
+# ⚠️ 公共库放在 docker/ 目录下（fnpack 只收 docker/、ui/、config/），
+#    见 install_callback 里的说明。
+LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
+[ -r "$LIB" ] || exit 0
+. "$LIB"
 
-[ -f "$COMPOSE" ] || exit 0
+fv_prepare_fonts
 
-BLOCK=""
-OLD_IFS="$IFS"
-IFS=','
-for v in $VOLUMES; do
-  v="$(echo "$v" | tr -d '[:space:]')"
-  case "$v" in
-    /vol*|\/volume*) ;;
-    *) continue ;;
-  esac
-  case "$v" in
-    *:*) continue ;;
-  esac
-  BLOCK="${BLOCK}      - ${v}:${v}:ro
-"
-done
-IFS="$OLD_IFS"
+LIST="$(fv_resolve_volumes "${wizard_volumes:-auto}")"
+fv_write_volumes "$LIST"
+fv_write_env
 
-[ -n "$BLOCK" ] || exit 0
-
-TMP="${COMPOSE}.new"
-if awk -v block="$BLOCK" '
-  /## VOLUMES_BEGIN/ { print; printf "%s", block; skip=1; next }
-  /## VOLUMES_END/   { skip=0 }
-  skip != 1 { print }
-' "$COMPOSE" > "$TMP" 2>/dev/null && [ -s "$TMP" ]; then
-  mv "$TMP" "$COMPOSE"
-fi
-
-# 建好自定义字体目录（compose 里已把 ${TRIM_PKGVAR}/fonts 挂到容器 /usr/local/share/fonts）
-if [ -n "${TRIM_PKGVAR:-}" ]; then
-  mkdir -p "$TRIM_PKGVAR/fonts" 2>/dev/null
-fi
+# 重建容器，让新的挂载段真正生效
+fv_rebuild
 
 exit 0

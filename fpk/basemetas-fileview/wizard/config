@@ -4,23 +4,27 @@
     "items": [
       {
         "type": "tips",
-        "helpText": "修改后需重新启动本应用才能生效。已挂载的存储卷以只读方式提供，不会改动其中的文件。"
+        "helpText": "保存后会自动重建容器，无需手动重启应用。已挂载的存储卷以只读方式提供，不会改动其中的文件。"
       },
       {
         "type": "text",
         "field": "wizard_volumes",
         "label": "允许预览的存储卷",
-        "initValue": "/vol1,/vol2",
+        "initValue": "auto",
         "rules": [
           {
             "required": true,
-            "message": "请至少填写一个存储卷，例如 /vol1"
+            "message": "请填写 auto 或存储卷列表，例如 /vol1,/vol2"
           },
           {
-            "pattern": "^\\s*/vol[0-9]+\\s*(,\\s*/vol[0-9]+\\s*)*$",
-            "message": "格式如 /vol1 或 /vol1,/vol2"
+            "pattern": "^\\s*[aA][uU][tT][oO]\\s*$|^\\s*/vol[0-9]+\\s*(,\\s*/vol[0-9]+\\s*)*$",
+            "message": "填 auto（自动全部）或 /vol1,/vol2 这样的列表"
           }
         ]
+      },
+      {
+        "type": "tips",
+        "helpText": "若你新增了硬盘（例如 /vol4），把这里改回 auto 再保存一次，即可自动纳入。"
       }
     ]
   }

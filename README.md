@@ -13,10 +13,12 @@
 
 | 路径 | 说明 |
 |---|---|
-| `basemetas-fileview.fpk` | 可直接安装的安装包（约 40 KB，不含镜像） |
+| `basemetas-fileview.fpk` | 可直接安装的安装包（约 45 KB，不含镜像） |
 | `fpk/basemetas-fileview/` | 安装包工程源码（改配置改这里） |
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
-| `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`） |
+| `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`selfcheck.sh`） |
+| `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
+| `CHANGELOG.md` | 版本更新说明 |
 | `自动更新/` | 自动更新方案（脚本 + 向导答案模板 + 操作手册） |
 
 > `.fpk` 里装的是「怎么跑」而不是「跑什么」：预览引擎镜像 `basemetas/fileview:1.5.2`（约 863 MB）在**安装时**从 Docker Hub 拉取，不在包内。这也是飞牛官方 Docker 应用的标准形态。
@@ -24,7 +26,7 @@
 ## 安装
 
 1. 应用中心 → 左下角「**手动安装**」→ 上传 `basemetas-fileview.fpk`
-2. 安装向导填写**允许预览的存储卷**（默认 `/vol1,/vol2`，按机器实际存储卷填写）
+2. 安装向导的「允许预览的存储卷」保持默认 `auto` 即可（自动挂载本机全部 `/volN`）
 3. 装完自动启动。文件管理器右键文件 → 「**用 FileView 打开**」
 
 首次安装需拉取镜像，**耗时几分钟**；国内直连 Docker Hub 较慢，建议先配置镜像加速。卸载不会删除镜像，重装时直接复用。
@@ -93,7 +95,28 @@ FileView 引擎容器  http://fileview:80/preview/view?path=/vol1/...
 
 ### 存储卷
 
-FileView 需以**同名同路径**只读挂载存储卷（`/vol1:/vol1:ro`），否则容器内找不到飞牛传来的绝对路径。在安装向导 / 应用「设置」里填 `wizard_volumes`（如 `/vol1,/vol2`），`cmd/install_callback` 会据此重写 compose 的挂载段。
+FileView 需以**同名同路径**只读挂载存储卷（`/vol1:/vol1:ro`），否则容器内找不到飞牛传来的绝对路径。
+
+安装向导 / 应用「设置」里的 `wizard_volumes`：
+
+| 填什么 | 效果 |
+|---|---|
+| `auto`（默认） | 自动探测并挂载本机**全部** `/volN`，以 `/proc/mounts` 为准 |
+| `/vol1,/vol2` | 只挂载指定的卷 |
+
+保存后**会自动重建容器**使挂载生效，不必手动重启应用。以后新增了硬盘，把设置改回 `auto` 保存一次即可纳入。
+
+> 注意：bind 挂载在容器创建时确定，只改配置不重建容器是**不会**生效的（`docker restart` 也不行）。这就是 0.5.6 之前「设置里明明有 `/vol3`，预览还是报文件不存在」的原因。
+
+### 故障修复
+
+遇到「引擎容器 Up、网关容器 Restarting」或「新加的盘预览不了」，在 NAS 上用 root 执行：
+
+```bash
+bash tools/fv-repair.sh
+```
+
+脚本会依次做：探测存储卷 → 重写 compose 挂载段 → 清理残留 `app.sock` → 重建容器 → 验证并打印状态；网关仍未起来时会直接把日志打出来。
 
 ### 自定义字体
 
@@ -134,7 +157,7 @@ build.bat
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.5`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.6`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -142,6 +165,18 @@ build.bat
 | 0.6.0 | 1.6.0 | 升级引擎镜像时跟着抬 |
 
 飞牛靠版本号**递增**判断升级安装；同版本不允许覆盖安装。
+
+## 更新说明
+
+各版本的改动详见 [CHANGELOG.md](CHANGELOG.md)。最近几个版本：
+
+| 版本 | 要点 |
+|---|---|
+| **0.5.6** | 修复网关容器无限重启（残留 `app.sock`）；存储卷默认 `auto` 自动挂载全部 `/volN`；保存设置即自动重建容器；新增 `tools/fv-repair.sh` |
+| 0.5.5 | 修复 Excel / CSV 打开后无限转圈（网关层改写前端 `credentials: 'omit'`） |
+| 0.5.4 | 支持自定义字体（挂到 `${TRIM_PKGVAR}/fonts`） |
+| 0.5.3 | 入口精简为只保留「用 FileView 打开」 |
+| 0.5.2 | 首个可安装版本 |
 
 ## 已知限制
 

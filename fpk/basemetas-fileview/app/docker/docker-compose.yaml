@@ -26,8 +26,18 @@ services:
     image: nginx:alpine
     container_name: basemetas-fileview-gateway
     restart: unless-stopped
-    # umask 000 让生成的 app.sock 可被网关进程连接
-    command: ["sh", "-c", "umask 000 && exec nginx -g 'daemon off;'"]
+    # ⚠️ 启动前必须先删掉残留的 app.sock（2026-09-26 踩坑，网关 Restarting 崩溃循环的真因）
+    #
+    # /app/target 是**宿主机目录的 bind 挂载**，所以 app.sock 会跨容器重启一直残留。
+    # nginx 启动时不会自己清理已存在的 unix socket 文件，一旦残留就：
+    #     nginx: [emerg] bind() to unix:/app/target/app.sock failed (98: Address already in use)
+    # 然后进程退出 → 配合 restart: unless-stopped → 陷入 Restarting(1)、Restarting(2)…… 死循环，
+    # 表现就是「引擎容器是 Up 的，但整个预览打不开」。
+    #
+    # 所以这里显式 rm -f 再启动。umask 000 让新建的 socket 可被飞牛网关进程连接。
+    command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -g 'daemon off;'"]
+    depends_on:
+      - fileview
     volumes:
       # ⚠️ 这里挂的是**整个 docker 目录**，而不是单个 nginx.conf 文件。
       # 原因（2026-09-26 踩坑）：文件级挂载时，只要宿主上那个文件不存在，

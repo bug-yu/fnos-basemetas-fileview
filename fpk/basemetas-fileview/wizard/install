@@ -4,27 +4,27 @@
     "items": [
       {
         "type": "tips",
-        "helpText": "FileView 需要以「同名同路径」只读挂载存储卷，才能预览其中的文件。请填写要允许预览的存储卷根路径，多个用英文逗号分隔。安装后可在本应用的「设置」中修改。"
+        "helpText": "FileView 需要以「同名同路径」只读挂载存储卷，才能预览其中的文件。默认 auto = 自动挂载本机全部存储卷，一般无需修改。安装后可在本应用的「设置」中调整。"
       },
       {
         "type": "text",
         "field": "wizard_volumes",
         "label": "允许预览的存储卷",
-        "initValue": "/vol1,/vol2",
+        "initValue": "auto",
         "rules": [
           {
             "required": true,
-            "message": "请至少填写一个存储卷，例如 /vol1"
+            "message": "请填写 auto 或存储卷列表，例如 /vol1,/vol2"
           },
           {
-            "pattern": "^\\s*/vol[0-9]+\\s*(,\\s*/vol[0-9]+\\s*)*$",
-            "message": "格式如 /vol1 或 /vol1,/vol2"
+            "pattern": "^\\s*[aA][uU][tT][oO]\\s*$|^\\s*/vol[0-9]+\\s*(,\\s*/vol[0-9]+\\s*)*$",
+            "message": "填 auto（自动全部）或 /vol1,/vol2 这样的列表"
           }
         ]
       },
       {
         "type": "tips",
-        "helpText": "预览服务仅能读取这些卷中的文件，且为只读挂载，不会修改或删除任何文件。"
+        "helpText": "预览服务仅能读取这些卷中的文件，且为只读挂载，不会修改或删除任何文件。若只想开放部分卷，把 auto 换成具体列表即可。"
       }
     ]
   }

@@ -39,6 +39,20 @@ case "$1" in
       report_incomplete
       exit 1
     fi
+    # 清掉可能残留的 app.sock
+    # 背景（2026-09-26 踩坑）：它落在 ${TRIM_APPDEST} 这个宿主机目录里，容器删了文件还在。
+    # nginx 不会自己清理已存在的 unix socket，下次启动直接
+    #   bind() ... failed (98: Address already in use) → 退出 → Restarting 死循环。
+    # compose 的启动命令里也清了一次，这里是双保险（覆盖升级路径上 compose 命令可能还没换过来）。
+    rm -f "${TRIM_APPDEST}/app.sock" 2>/dev/null
+
+    # 补生成 docker/.env：覆盖升级时旧版本没有这个文件，
+    # 有了它，在命令行手工 docker compose up -d 也不会因 TRIM_* 为空而报 invalid spec。
+    if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
+      . "${TRIM_APPDEST}/docker/fv-volumes.sh"
+      fv_write_env
+    fi
+
     # 保证自定义字体目录存在（compose 把 ${TRIM_PKGVAR}/fonts 挂到容器 /usr/local/share/fonts）
     if [ -n "${TRIM_PKGVAR:-}" ]; then
       mkdir -p "$TRIM_PKGVAR/fonts" 2>/dev/null
