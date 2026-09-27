@@ -70,7 +70,30 @@ mkdir -p "$TRIM_APPDEST/docker" "$TRIM_PKGVAR"
 cp "$BASE/app/docker/docker-compose.yaml" "$TRIM_APPDEST/docker/docker-compose.yaml"
 . "$BASE/app/docker/fv-volumes.sh"
 
-fv_prepare_fonts
+fv_prepare_dirs
+echo "-- 宿主侧挂载目录与网络预览开关 --"
+for d in fonts data logs; do
+  [ -d "$TRIM_PKGVAR/$d" ] && echo "   ✅ 目录已建：$d" || { echo "   ❌ 未建：$d"; FAILED=1; }
+done
+for m in '/fonts:/usr/local/share/fonts:ro' '/data:/opt/fileview/data' '/logs:/opt/fileview/logs'; do
+  if grep -qF -- "- \"\${TRIM_PKGVAR}${m}\"" "$BASE/app/docker/docker-compose.yaml"; then
+    echo "   ✅ compose 挂载：${m}"
+  else
+    echo "   ❌ compose 缺少挂载：${m}"; FAILED=1
+  fi
+done
+if grep -qF 'FILEVIEW_NETWORK_SECURITY_TRUSTED_SITES=none.invalid' "$BASE/app/docker/docker-compose.yaml"; then
+  echo "   ✅ 网络文件预览已关闭（trusted-sites 配成永不匹配）"
+else
+  echo "   ❌ 未配置 FILEVIEW_NETWORK_SECURITY_TRUSTED_SITES"; FAILED=1
+fi
+# 挂载必须在 VOLUMES 标记块**之外**，否则会被卷列表重写冲掉
+if awk '/## VOLUMES_BEGIN/,/## VOLUMES_END/' "$BASE/app/docker/docker-compose.yaml" | grep -q 'opt/fileview'; then
+  echo "   ❌ data/logs 挂载落在 VOLUMES 标记块内，会被重写冲掉"; FAILED=1
+else
+  echo "   ✅ 挂载在标记块之外（升级重写不会冲掉）"
+fi
+
 fv_sync_volumes "/vol1,/vol3" >/dev/null
 echo "-- 保存设置 /vol1,/vol3 之后 --"
 sed -n '/## VOLUMES_BEGIN/,/## VOLUMES_END/p' "$TRIM_APPDEST/docker/docker-compose.yaml" | sed 's/^/   /'

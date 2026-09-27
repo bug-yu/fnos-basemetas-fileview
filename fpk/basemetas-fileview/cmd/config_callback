@@ -9,7 +9,7 @@ LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 [ -r "$LIB" ] || exit 0
 . "$LIB"
 
-fv_prepare_fonts
+fv_prepare_dirs
 # ensure：只在挂载清单**真的变了**才重建容器（双向比对：少了要重建，多了也要重建）。
 # 不要无条件 rebuild —— 重建期间容器会短暂以 <hash>_<name> 的临时名存在，
 # 若此刻飞牛正在停用 / 卸载，它手里的容器 ID 就失效了，界面会报 Request failed。

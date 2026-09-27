@@ -240,6 +240,28 @@ bash fv-uninstall-fix.sh
 
 > 请使用正规渠道取得授权的字体。思源系列（已内置）开源可商用；从 Windows 直接拷贝宋体/微软雅黑属授权灰色地带。DWG 图纸走的是浏览器端 SHX 字体，与本目录无关。
 
+### 数据与日志目录
+
+引擎的**工作目录**和**日志**都挂到了应用数据目录（`${TRIM_PKGVAR}`，即 `/vol{n}/@appdata/basemetas-fileview/`）：
+
+```yaml
+- "${TRIM_PKGVAR}/data:/opt/fileview/data"    # 转换产物、解压临时文件、LibreOffice / CAD 工作目录
+- "${TRIM_PKGVAR}/logs:/opt/fileview/logs"    # preview 与 convert 两个服务的文件日志
+```
+
+不挂的话它们会落在**容器可写层**，后果是：
+
+1. 升级时容器会被 `--force-recreate` 重建，可写层整个丢弃 → 缓存和中间产物全没，每个文件都要重新转换一遍；
+2. 日志只能从 `docker logs`（stdout）看，文件日志看不到也没法管理；
+3. 这部分占用既不可见、也不受应用管理。
+
+> 想看引擎到底写了什么、占了多少：
+> ```bash
+> docker exec basemetas-fileview-engine sh -c 'du -sh /opt/fileview/data /opt/fileview/logs'
+> tail -f /vol1/@appdata/basemetas-fileview/logs/preview/fileview-preview.log
+> ```
+> 目录权限是 `0777`（引擎容器以什么用户跑都能写），内容只是临时产物和日志，不含用户文件。
+
 ## 安全说明
 
 - ✅ 统一网关先校验登录态，未登录访问被挡在网关层；不对外暴露任何端口。
@@ -247,6 +269,13 @@ bash fv-uninstall-fix.sh
   不需要任何设置。团队文件 / 共享文件按你在飞牛里设的权限正常放行；静态资源不参与判定。
   看判定过程：`docker logs basemetas-fileview-acl`；出现误拦时的应急开关见下面「按用户区分权限」一节。
 - ✅ 存储卷只读挂载，且仅限向导里填写的卷。
+- ✅ **网络文件预览已关闭（0.5.22 起）**。本应用的入口只做本地路径预览，用不到引擎的「给一个 URL 让它去下载」能力。留着那条路等于开了一个 SSRF：任何能登录飞牛的人都能构造
+  `/app/basemetas-fileview/preview/view?url=http://<内网地址>/...` 让引擎去抓内网资源渲染给他看，
+  而且这条路径**绕过逐用户权限闸门**（闸门从 `path` / `filePath` 或来源页 query 里取路径，`url=` 请求里没有 `/vol` 路径，走的是「放行」分支）。
+
+  做法是把白名单配成一个永不匹配的域名：`FILEVIEW_NETWORK_SECURITY_TRUSTED_SITES=none.invalid`。
+  引擎源码里未配置该值时**默认允许所有域名**（`HttpUtils: if (!hasTrustedSitesConfig()) return true;`）。
+  需要恢复网络预览时，把这一行改成你自己的域名（多个用逗号分隔），欢迎页的「查看样例」不受影响（它用的是容器内路径）。
 - ⚠️ **应用用户加入了 `docker` 组**（`config/privilege` 里的 `join-groups: ["docker"]`）。
 
   这是必需的：本应用的「保存设置后自动重建容器」「如实上报运行状态」「停用」都要以应用用户身份
@@ -405,7 +434,7 @@ build.bat
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.21`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.22`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -420,6 +449,7 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.22** | 挂出引擎的工作目录与日志（此前落在容器可写层，升级就丢）；关掉网络文件预览（SSRF 入口，且绕过权限闸门） |
 | **0.5.21** | 修 `cmd/uninstall_*` 的 CRLF 行尾（此前以 CRLF 打进包，卸载清理动作静默失效）；新增打包前行尾强制检查 |
 | **0.5.20** | 放开单文件预览大小上限，默认 **1 GB**（引擎自带 100 MB 闸门，超过就提示「文件转换失败 413」），可在设置里调整 |
 | **0.5.19** | 去掉应用设置里没意义的「访问权限」标签页 |

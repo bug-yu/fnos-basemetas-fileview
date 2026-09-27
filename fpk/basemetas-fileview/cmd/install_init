@@ -1,2 +1,18 @@
 #!/bin/bash
+# 安装开始前：先把宿主侧的挂载目录建好。
+#
+# 为什么必须在**这一步**做：compose 里有三个 bind 挂载指向 ${TRIM_PKGVAR}
+#   fonts → /usr/local/share/fonts
+#   data  → /opt/fileview/data   （引擎的转换产物 / 临时文件 / LibreOffice、CAD 工作目录）
+#   logs  → /opt/fileview/logs
+# 如果宿主上这些目录还不存在，docker 会**以 root 身份**把它们建出来（0755）。
+# 万一容器里的进程不是 root，就写不进去 —— 表现为预览失败，而日志里看不出原因。
+# 框架会在 install_callback 之前就用 compose 把容器建好，所以这里先把目录备好。
+#
+# 不 source 公共库：这个时机安装包可能还没释放到 ${TRIM_APPDEST}，库读不到。
+# 权限给 0777：容器以什么用户跑都能写；这些只是引擎的临时产物和日志，不是用户数据。
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+  mkdir -p "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
+  chmod 0777 "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
+fi
 exit 0

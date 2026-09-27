@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.21
+version=0.5.22
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.21：修复卸载容错脚本的行尾问题（它们此前以 CRLF 打进安装包，在 Linux 上变量值会多带一个 \r，导致清理动作静默失效、卸载/停用仍可能报 Request failed）；打包前新增行尾强制检查。0.5.20：放开单文件预览大小上限，默认 1 GB —— 引擎自带 100 MB 闸门，超过的文件会被直接拒绝、提示「文件转换失败 413」，现在可在设置里调整。0.5.19：去掉应用设置里没意义的「访问权限」标签页。0.5.17：逐用户权限校验默认开启，没有读权限的文件返回 403；误拦时把 @appdata/basemetas-fileview/acl.conf 的 mode 改成 log 即可退回「只记录不拦截」。
+changelog=0.5.22：按官方部署指南补齐两处生产必做项。① 把引擎的工作目录与日志挂出来（转换产物、临时文件、LibreOffice/CAD 工作目录此前落在容器可写层，升级重建就全丢，日志也只能从 stdout 看）；② 关掉网络文件预览（本应用只用本地路径预览，留着等于开了个 SSRF 入口，且绕过逐用户权限闸门）。0.5.21：修复卸载容错脚本的 CRLF 行尾（此前以 CRLF 打进安装包，清理动作会静默失效）。0.5.20：放开单文件预览大小上限，默认 1 GB —— 引擎自带 100 MB 闸门，超过会提示「文件转换失败 413」，现在可在设置里调整。0.5.19：去掉应用设置里没意义的「访问权限」标签页。0.5.17：逐用户权限校验默认开启，没有读权限的文件返回 403；误拦时把 @appdata/basemetas-fileview/acl.conf 的 mode 改成 log 即可退回「只记录不拦截」。
 
 ctl_stop=true
 checkport=false

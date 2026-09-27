@@ -582,9 +582,17 @@ fv_ensure_mounts() {
   return 0
 }
 
-# 建好自定义字体目录（compose 把 ${TRIM_PKGVAR}/fonts 挂到容器 /usr/local/share/fonts）
-fv_prepare_fonts() {
+# 建好宿主侧的挂载目录（compose 把它们挂进容器）：
+#   fonts → /usr/local/share/fonts（自定义字体，见 README）
+#   data  → /opt/fileview/data   （转换产物 / 临时文件 / LibreOffice、CAD 工作目录）
+#   logs  → /opt/fileview/logs   （preview 与 convert 的文件日志）
+#
+# ⚠️ 必须**在容器创建之前**建好，否则 docker 会拿 root 身份把它们建成 0755，
+#    万一容器里的进程不是 root 就写不进去（表现为预览失败，且日志里看不出原因）。
+#    权限给 0777：容器以什么用户跑都能写，且这些只是引擎的临时产物和日志。
+fv_prepare_dirs() {
   [ -n "${TRIM_PKGVAR:-}" ] || return 0
-  mkdir -p "${TRIM_PKGVAR}/fonts" 2>/dev/null
+  mkdir -p "${TRIM_PKGVAR}/fonts" "${TRIM_PKGVAR}/data" "${TRIM_PKGVAR}/logs" 2>/dev/null
+  chmod 0777 "${TRIM_PKGVAR}/fonts" "${TRIM_PKGVAR}/data" "${TRIM_PKGVAR}/logs" 2>/dev/null
   return 0
 }

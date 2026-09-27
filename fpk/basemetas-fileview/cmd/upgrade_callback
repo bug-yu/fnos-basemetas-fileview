@@ -13,7 +13,7 @@ LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 [ -r "$LIB" ] || exit 0
 . "$LIB"
 
-fv_prepare_fonts
+fv_prepare_dirs
 # rebuild：升级一定会换 compose，无条件重建容器最省事也最稳。
 fv_sync_volumes "${wizard_volumes:-}" rebuild >/dev/null
 

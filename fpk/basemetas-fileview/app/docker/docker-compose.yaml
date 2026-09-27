@@ -15,8 +15,26 @@ services:
       # 需授权的字体。挂到应用的**数据目录**下（@appdata），卸载重装、升级都不会丢；
       # 放入 ttf / ttc / otf 后重启本容器即可生效，见 README「装中文字体」一节。
       - "${TRIM_PKGVAR}/fonts:/usr/local/share/fonts:ro"
+      # 引擎的工作目录与日志，必须挂出来：
+      #   /opt/fileview/data  —— 转换产物、解压临时文件、LibreOffice / CAD 的工作目录
+      #                          （preview-dir / temp-dir / uncompress-dir / libreoffice / cad2x / target）
+      #   /opt/fileview/logs  —— preview 与 convert 两个服务的文件日志
+      # 不挂的话它们会落在**容器可写层**：升级时 --force-recreate 一重建就全丢（缓存、
+      # 中间产物都要重来），日志也只能从 stdout 看，而且这部分占用既不可见也不受管理。
+      - "${TRIM_PKGVAR}/data:/opt/fileview/data"
+      - "${TRIM_PKGVAR}/logs:/opt/fileview/logs"
     environment:
       - TZ=Asia/Shanghai
+      # 网络文件预览（?url= / netFile）的白名单。引擎源码里未配置该值时**默认允许所有域名**
+      # （HttpUtils: `if (!hasTrustedSitesConfig()) return true;`），而本应用的入口只做
+      # **本地路径预览**（srcRelativePath），完全用不到网络下载能力。
+      # 留着它就等于开了一个 SSRF：任何能登录飞牛的人都可以构造
+      #   /app/basemetas-fileview/preview/view?url=http://<内网地址>/...
+      # 让引擎去抓内网资源渲染给他看 —— 而且这条路径**绕过逐用户权限闸门**
+      # （闸门从 path/filePath 或来源页 query 取路径，url= 请求里没有 /vol 路径，走「放行」分支）。
+      # 这里配一个永不匹配的域名，等价于全禁。欢迎页的「查看样例」用的是容器内路径
+      # /opt/fileview/assets/sample.docx，不受影响。
+      - FILEVIEW_NETWORK_SECURITY_TRUSTED_SITES=none.invalid
       # 单文件预览大小上限（MB）。引擎自带默认值 100，超过它的文件在**转换之前**就被
       # 直接拒绝，接口返回 HTTP 413，前端显示成「文件转换失败 413」。
       #
