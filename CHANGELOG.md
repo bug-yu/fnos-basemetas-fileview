@@ -6,6 +6,54 @@
 
 ---
 
+## 0.5.12
+
+### 停用/卸载是「**每次**都失败」，不是偶发 —— 真因是残留的 compose 临时容器
+
+0.5.11 修了「重建竞态」，但停用仍然每次都失败。再看那次报错的完整名字列表，关键在这里：
+
+```
+ Container basemetas-fileview-gateway                 Stopped
+ Container basemetas-fileview-engine                  Stopping
+ Container f355c8f78542_basemetas-fileview-engine     Stopping   ← 另一个容器
+ Container basemetas-fileview-engine                  Error while Stopping
+ Container f355c8f78542_basemetas-fileview-engine     Stopped
+Error response from daemon: No such container: f355c8f785421a50…
+```
+
+`f355c8f78542_basemetas-fileview-engine` 不是「同一个容器的临时名」，而是**真实存在的第二个容器**。
+
+compose 用 `--force-recreate` 重建带 `container_name` 的容器时，流程是
+「先建一个临时名的新容器 → 删掉旧的 → 再把新的改名」。这个重建一旦被中途打断
+（回调脚本超时被杀、进程被 kill），临时容器就**留在了系统里**。
+
+它带着和正式容器**同一套 compose 标签**（同项目、同服务），于是飞牛此后每次停用/卸载都会去停它：
+
+```
+Error while Stopping / No such container: f355c8f78542…
+```
+
+→ 界面**每次都报** `Request failed`。
+
+这也解释了为什么 0.5.7 的卸载修复没治好：那个脚本按 `basemetas-fileview-engine` 这种**正式名字**强删，
+删不到带 12 位哈希前缀的这个。
+
+### 修复
+
+- **新增 `fv_clean_orphans`**：按名字模式清理残留临时容器。
+  调用点：`fv_rebuild` 重建前、`cmd/main stop` 停用前、`cmd/uninstall_init` / `uninstall_callback` 卸载前后。
+- **安全边界**：只删名字严格匹配 `<12 位十六进制>_basemetas-fileview-` 的容器，
+  不会误伤用户自己起的、名字里恰好含 `basemetas-fileview` 的容器。
+- `config_callback` 改成「挂载清单双向比对，真的变了才重建」（0.5.11 已做），
+  进一步减少重建窗口 —— 重建窗口越少，留下临时容器的机会越少。
+
+### 工具
+
+- `tools/fv-repair.sh` 新增步骤「0c. 清理 compose 残留的临时容器」，一键清掉。
+- `tools/fv-doctor.sh` 会把残留容器报出来（并给出清理命令）。
+
+---
+
 ## 0.5.11
 
 ### 停用失败的真因：容器重建竞态

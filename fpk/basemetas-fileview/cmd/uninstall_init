@@ -13,7 +13,19 @@ PROJ="basemetas-fileview"
 COMPOSE_DIR="${TRIM_APPDEST}/docker"
 COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yaml"
 
-# 先按容器名删除，解决"脱离 project 管理"的残留（幂等，失败也继续）
+# 先清 compose 重建被中断时残留的临时容器（形如 <12位哈希>_basemetas-fileview-xxx）。
+# 它和正式容器同名同项目，会让 down / stop 报 "No such container" —— 而且是**持续失败**，不是偶发。
+# 只按正式容器名强删（下面那行）是删不到它的，所以这里按名字模式清。
+if command -v docker >/dev/null 2>&1; then
+  docker ps -a --filter name=basemetas-fileview --format '{{.Names}}' 2>/dev/null \
+    | grep -E '^[0-9a-f]{12}_basemetas-fileview-' \
+    | while read -r n; do
+        [ -n "$n" ] || continue
+        docker rm -f "$n" 2>/dev/null || true
+      done
+fi
+
+# 再按容器名删除，解决"脱离 project 管理"的残留（幂等，失败也继续）
 if command -v docker >/dev/null 2>&1; then
   docker rm -f "${PROJ}-engine" "${PROJ}-gateway" 2>/dev/null || true
 fi

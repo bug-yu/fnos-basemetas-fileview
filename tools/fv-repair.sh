@@ -71,6 +71,23 @@ else
   echo "  （跳过：用户 $U 不存在或没有 runuser）"
 fi
 
+say "0c. 清理 compose 残留的临时容器"
+# 名字形如 <12位哈希>_basemetas-fileview-xxx —— 这是 compose 用 --force-recreate 重建
+# 带 container_name 的容器时的中间产物。重建被中途打断（回调超时被杀）就会留下来，
+# 它和正式容器同名同项目，之后飞牛每次停用/卸载都会去停它并报
+#   Error while Stopping / No such container: <hash>
+# —— 表现是「停用**每次**都失败」，不是偶发。只按正式容器名强删是删不到它的。
+ORPHANS="$(docker ps -a --filter name=basemetas-fileview --format '{{.Names}}' 2>/dev/null \
+           | grep -E '^[0-9a-f]{12}_basemetas-fileview-' || true)"
+if [ -n "$ORPHANS" ]; then
+  for n in $ORPHANS; do
+    echo "  删除残留容器：$n"
+    docker rm -f "$n" >/dev/null 2>&1
+  done
+else
+  echo "  ✅ 没有残留（正常）"
+fi
+
 # ---------------------------------------------------------------------------
 # 1. 探测宿主机存储卷（挂载点 ∪ /volN 目录，取并集）
 # ---------------------------------------------------------------------------

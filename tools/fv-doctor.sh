@@ -146,6 +146,16 @@ if command -v docker >/dev/null 2>&1; then
     st="$(docker inspect -f '{{.State.Status}}' "$c" 2>/dev/null)"
     if [ "$st" = "running" ]; then ok "$c 正在运行"; else bad "$c 状态：${st:-不存在}"; fi
   done
+  # compose 重建被中断时会留下 <12位哈希>_<容器名> 的临时容器。
+  # 它和正式容器同名同项目，会让飞牛每次停用/卸载都报 No such container（持续失败）。
+  ORPH="$(docker ps -a --filter "name=$APPNAME" --format '{{.Names}}' 2>/dev/null \
+          | grep -E "^[0-9a-f]{12}_${APPNAME}-" || true)"
+  if [ -n "$ORPH" ]; then
+    bad "发现 compose 残留的临时容器 —— 它会让「停用 / 卸载」**每次**都报 No such container："
+    for n in $ORPH; do inf "   $n"; done
+    inf "   清理：bash tools/fv-repair.sh"
+    VERDICT+=("存在 compose 残留临时容器，会导致停用/卸载失败")
+  fi
 fi
 
 say "4. 引擎容器**实际**挂载了哪些 /volN（关键：bind 挂载只在创建容器时确定）"

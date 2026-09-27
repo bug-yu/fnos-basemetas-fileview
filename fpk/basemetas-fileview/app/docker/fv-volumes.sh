@@ -329,6 +329,35 @@ fv_current_project() {
 }
 
 # ---------------------------------------------------------------------------
+# 4c. 清掉 compose 重建被中断时残留的「临时容器」
+# ---------------------------------------------------------------------------
+# 名字形如 <12位十六进制>_basemetas-fileview-xxx，是 compose 用 --force-recreate
+# 重建带 container_name 的容器时的中间产物：先建临时名的新容器 → 删旧的 → 再改名。
+#
+# ⚠️ 为什么必须清（2026-09-27 实测踩到，而且是**持续失败**不是偶发）：
+#   重建一旦被中途打断（回调脚本超时被杀、进程被 kill），临时容器就留下来了。
+#   它和正式容器同名同项目，此后飞牛每次停用 / 卸载都会去停它：
+#       Container f355c8f78542_basemetas-fileview-engine  Stopping
+#       Container basemetas-fileview-engine               Error while Stopping
+#       Error response from daemon: No such container: f355c8f78542…
+#   → 界面每次都是 Request failed。
+#   只按正式容器名强删（0.5.7 的卸载修复）删不到它，所以必须按名字模式清。
+#
+# 安全：只删名字严格匹配 `<12位十六进制>_basemetas-fileview-` 的容器，不误伤其它容器。
+fv_clean_orphans() {
+  command -v docker >/dev/null 2>&1 || return 0
+  local n
+  docker ps -a --filter name=basemetas-fileview --format '{{.Names}}' 2>/dev/null \
+    | grep -E '^[0-9a-f]{12}_basemetas-fileview-' \
+    | while read -r n; do
+        [ -n "$n" ] || continue
+        fv_log "清理 compose 残留的临时容器：${n}"
+        docker rm -f "$n" >/dev/null 2>&1
+      done
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 5. 重建容器 —— 「改了设置却不生效」的根治
 # ---------------------------------------------------------------------------
 # 踩坑：改完设置、compose 文件里也确实多了 /vol3，但容器不重建，
@@ -348,6 +377,9 @@ fv_rebuild() {
   command -v docker >/dev/null 2>&1 || { fv_log "跳过重建容器：找不到 docker 命令"; return 0; }
   # 没有 docker 权限就别装了 —— 明确写出来，别让它看起来像「已经重建成功」
   fv_docker_ok || { fv_docker_denied_note; return 0; }
+
+  # 先把上次重建被打断留下的临时容器清掉，否则 compose 会因为名字冲突/残留状态失败
+  fv_clean_orphans
 
   local d="${TRIM_APPDEST}/docker"
   [ -f "$d/docker-compose.yaml" ] || { fv_log "跳过重建容器：缺少 $d/docker-compose.yaml"; return 0; }

@@ -93,6 +93,12 @@ case "$1" in
     #   根因在 config_callback 以前无条件重建容器，已改成「挂载清单变了才重建」；
     #   而 stop 这边再叠一层 compose 只会增加互相干扰的机会，所以只保留最直接的 docker stop。
     if command -v docker >/dev/null 2>&1; then
+      # 先清掉 compose 残留的临时容器（<hash>_<name>）：它和正式容器同名同项目，
+      # 会让飞牛自己的停用动作报 No such container —— 而且是**持续失败**，不是偶发。
+      if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
+        . "${TRIM_APPDEST}/docker/fv-volumes.sh"
+        fv_clean_orphans
+      fi
       # 加超时：引擎是 Java+redis+rocketmq 的栈，优雅退出慢会让停用接口超时。
       timeout 20 docker stop -t 5 "$ENGINE" "$GATEWAY" >/dev/null 2>&1
     fi
