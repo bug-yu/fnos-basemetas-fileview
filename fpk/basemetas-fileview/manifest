@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.17
+version=0.5.18
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,13 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.17：逐用户权限校验**默认开启**，设置里不再需要开关。① 闸门默认 mode=enforce，没有读权限的文件直接返回 403；设置页那一栏改成纯说明。② 应急开关保留：把 @appdata/basemetas-fileview/acl.conf 里的 mode 改成 log 即退回「只记录不拦截」，改完立即生效、不用重启容器也不用重装；应用只在文件不存在时写默认值，不覆盖手工改动。③ 实测已闭环：同一用户对别人的私有文件 403，对自己的文件与团队（按组授权）文件正常放行；带 mode 0000 但 ACL 允许读的文件也判为可读（说明读的是 ACL 而不是 POSIX 模式位）。0.5.16：闸门判定修两处（静态资源误判 + /opt 转换产物旁路）。0.5.15：新增逐用户权限校验闸门。0.5.14：新增 __whoami 诊断端点。0.5.13：撤回 cmd/main stop 里的兜底停容器。0.5.12：清理 compose 残留临时容器。0.5.11：修容器重建竞态。0.5.10：compose 里的 ${TRIM_*} 就地替换为字面量路径。0.5.9：声明 api-scope 并新增开放 API 预检。0.5.8：修复应用用户缺少 docker 权限导致容器从不重建。0.5.7：修复卸载失败。0.5.6：修复网关容器重启循环。
+changelog=0.5.18：清掉应用设置里两处没意义的项目。① 隐藏「访问权限」标签页（manifest 加 disable_authorization_path=true）—— 那一栏是给「让用户自己选授权目录」的应用用的（对应开放 API 的 trim.file.sharedAccess），本应用不走那套：可访问的存储卷由安装向导决定，逐用户权限由闸门按 ACL 判定，留着只会永远显示「暂无授权记录」，让人以为哪里没配好。② 隐藏入口设置里的「自定义 URL」（app/ui/config 的 control.accessPerm 由 readonly 改成 hidden）—— 入口地址由 gatewayPrefix/gatewaySocket 决定，用户改了会让预览打不开，所以不给改。0.5.17：逐用户权限校验默认开启（enforce）。0.5.16：闸门判定修两处（静态资源误判 + /opt 转换产物旁路）。0.5.15：新增逐用户权限校验闸门。0.5.14：新增 __whoami 诊断端点。0.5.13：撤回 cmd/main stop 里的兜底停容器。0.5.12：清理 compose 残留临时容器。0.5.11：修容器重建竞态。0.5.10：compose 里的 ${TRIM_*} 就地替换为字面量路径。0.5.9：声明 api-scope 并新增开放 API 预检。0.5.8：修复应用用户缺少 docker 权限导致容器从不重建。0.5.7：修复卸载失败。0.5.6：修复网关容器重启循环。
 
 ctl_stop=true
 checkport=false
+
+# 隐藏应用设置里的「访问权限」标签页。
+# 那个页面是给「让用户自己选授权目录」的应用用的（对应开放 API 的 trim.file.sharedAccess），
+# 本应用不走那套 —— 可访问的存储卷由安装向导的 wizard_volumes 决定，逐用户权限由闸门按 ACL 判定，
+# 所以那一栏永远是「暂无授权记录」，留着只会让人以为哪里没配好。
+disable_authorization_path=true
