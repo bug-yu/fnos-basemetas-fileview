@@ -83,24 +83,24 @@ case "$1" in
     ;;
 
   stop)
-    # 框架对 docker-project 资源会自己停容器，这里只做**最小兜底**：按容器名 docker stop。
+    # ⚠️ 这里**故意什么都不做**，只记一行诊断日志。
     #
-    # ⚠️ 不要在这里再调 `docker compose stop`：
-    #   实测停用失败的报错是
-    #     Container basemetas-fileview-engine  Error while Stopping
-    #     Error response from daemon: No such container: <hash>
-    #   —— 那是「容器正在被重建」的典型症状（重建期间容器会短暂以 <hash>_<name> 的临时名存在）。
-    #   根因在 config_callback 以前无条件重建容器，已改成「挂载清单变了才重建」；
-    #   而 stop 这边再叠一层 compose 只会增加互相干扰的机会，所以只保留最直接的 docker stop。
-    if command -v docker >/dev/null 2>&1; then
-      # 先清掉 compose 残留的临时容器（<hash>_<name>）：它和正式容器同名同项目，
-      # 会让飞牛自己的停用动作报 No such container —— 而且是**持续失败**，不是偶发。
-      if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
-        . "${TRIM_APPDEST}/docker/fv-volumes.sh"
-        fv_clean_orphans
-      fi
-      # 加超时：引擎是 Java+redis+rocketmq 的栈，优雅退出慢会让停用接口超时。
-      timeout 20 docker stop -t 5 "$ENGINE" "$GATEWAY" >/dev/null 2>&1
+    # 历史教训（0.5.8 → 0.5.12 一路踩过来的）：
+    #   0.5.8 起这里加过「兜底停容器」，先试过 `docker compose stop`，后来改成 `docker stop -t 5`。
+    #   实测结果是**越帮越忙**：
+    #     1) 我们先把容器停掉，框架随后自己那次 compose stop/down 看到的状态就对不上了；
+    #     2) `-t 5` 太短 —— 引擎是 Java + redis + rocketmq 的栈，5 秒内退不干净就被 SIGKILL，
+    #        退出码变成 137，飞牛界面显示「容器错误退出(137)」；
+    #     3) 重建窗口 + 停用叠加，还会看到
+    #          Container <hash>_basemetas-fileview-engine  Stopping
+    #          Error response from daemon: No such container: <hash>
+    #   而**观测事实是：不加任何干预时容器本来就能正常停下**（框架自己的 compose 会处理）。
+    #   所以这里保持空操作最安全，只留日志，方便确认它到底有没有被调用、调用时容器是什么状态。
+    if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
+      . "${TRIM_APPDEST}/docker/fv-volumes.sh"
+      fv_log "── cmd/main stop 被调用（本脚本不停容器，交给框架）──"
+      fv_log "   调用时容器：$(docker ps -a --filter name=basemetas-fileview \
+            --format '{{.Names}}={{.State}}' 2>/dev/null | tr '\n' ' ')"
     fi
     exit 0
     ;;

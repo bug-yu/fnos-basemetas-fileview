@@ -6,6 +6,46 @@
 
 ---
 
+## 0.5.13
+
+### 撤回「兜底停容器」—— 它让情况更糟
+
+先看实测事实：
+
+```
+$ docker ps -a --filter name=basemetas-fileview --format 'table {{.Names}}\t{{.Status}}\t{{.CreatedAt}}'
+NAMES                        STATUS          CREATED AT
+basemetas-fileview-gateway   Up 15 minutes   2026-09-27 11:59:01 +0800 CST
+basemetas-fileview-engine    Up 15 minutes   2026-09-27 11:59:01 +0800 CST
+```
+
+**没有残留的临时容器**（0.5.12 的推测不成立），而且**容器确实停下来了**。
+但飞牛界面仍报失败，且引擎的退出码是 **137（SIGKILL）**。
+
+顺着 137 往回看，问题出在我自己 0.5.8 起加进 `cmd/main stop` 的那段「兜底」：
+
+| 我做了什么 | 后果 |
+|---|---|
+| 先在 `main stop` 里把容器停掉 | 框架随后自己那次 `compose stop/down` 看到的状态就对不上了 |
+| `docker stop -t 5` 只给 5 秒 | 引擎是 Java + redis + rocketmq 的栈，5 秒内退不干净 → 被 SIGKILL → **退出码 137** → 界面显示「容器错误退出(137)」 |
+| 0.5.8 还叠过 `docker compose stop` | 和框架的停用动作互相干扰，出现 `Container <hash>_xxx Stopping` / `No such container` |
+
+而**观测事实是：不加任何干预时，容器本来就能正常停下**（框架自己的 compose 会处理）。
+
+### 修复
+
+- **`cmd/main stop` 改回空操作**，只写一行诊断日志（记录调用时刻的容器状态）。
+  和 0.5.6 的行为一致 —— 那时候这里本来就是 `exit 0`。
+- 保留 `fv_clean_orphans`（重建前、卸载前后仍会清理 compose 残留临时容器），
+  它只删名字严格匹配 `<12 位十六进制>_basemetas-fileview-` 的容器，不误伤别的。
+
+### 说明
+
+这一版的教训值得记下来：**在别人（框架）已经负责的环节里「再兜一层」，很容易变成互相干扰。**
+`stop` 就是典型 —— 框架本来会停，我加的那层反而制造了 137 和状态不一致。
+
+---
+
 ## 0.5.12
 
 ### 停用/卸载是「**每次**都失败」，不是偶发 —— 真因是残留的 compose 临时容器
