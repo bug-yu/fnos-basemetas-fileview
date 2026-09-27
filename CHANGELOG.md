@@ -6,6 +6,49 @@
 
 ---
 
+## 0.5.10
+
+本次修的是「**点停用报 `Request failed, please try again later`**」——这个报错看不出任何原因，
+而且它还会连带卡住卸载 / 重装。
+
+### 高度嫌疑：compose 依赖了框架注入的环境变量
+
+`docker-compose.yaml` 里有两处变量插值：
+
+```yaml
+- "${TRIM_PKGVAR}/fonts:/usr/local/share/fonts:ro"
+- "${TRIM_APPDEST}/docker:/etc/nginx/conf.d:ro"
+- "${TRIM_APPDEST}:/app/target:rw"
+```
+
+而 `TRIM_APPDEST` / `TRIM_PKGVAR` **只有飞牛框架执行应用脚本时才注入**。
+框架自己那次 `docker compose`（停用、卸载、更新都会用到）一旦没有这两个变量，
+compose 就会把 `:/app/target:rw` 解析成非法挂载、整体失败：
+
+```
+invalid spec: :/app/target:rw: empty section between colons
+```
+
+界面只会把这次失败折叠成一句 `Request failed`。
+0.5.6 加的 `.env` 只能救「在 compose 同目录执行」这一种情况，**救不了别的工作目录**。
+
+**修法**：新增 `fv_materialize_env`，在回调里把 `${TRIM_APPDEST}` / `${TRIM_PKGVAR}`
+**就地替换成字面量路径**。compose 从此不依赖任何环境变量，从哪个目录执行都能解析。
+升级时框架重新释放 `app.tgz` 会把模板（含 `${TRIM_*}`）覆盖回来，下次回调再替换一次——
+和挂载段一样的「释放后重写」模式。替换是幂等的（已经没有 `${TRIM_` 就直接返回）。
+
+### 顺带
+
+- `cmd/main stop` 给 `docker compose stop` / `docker stop` 加了超时。
+  引擎是 Java + redis + rocketmq 的栈，优雅退出可能很慢；停用接口一旦超时，
+  界面同样只报一句 `Request failed`。
+- **开放 API 预检改为同时挂在「保存设置」上**。
+  `cmd/main start` 只在应用经历「停止 → 启动」状态迁移时才被调用，
+  而实际使用中应用很少停过（何况停用本身还可能失败），于是预检根本不会执行。
+  现在保存一次设置就能拿到结论。
+
+---
+
 ## 0.5.9
 
 本版**不改变任何访问行为**，只是为「按用户区分预览权限」把路铺好、把前提探明。

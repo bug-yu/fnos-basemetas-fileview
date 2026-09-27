@@ -92,11 +92,13 @@ case "$1" in
               "$ENGINE" 2>/dev/null)"
       if [ -n "$proj" ] && [ -n "${TRIM_APPDEST:-}" ] && [ -n "${TRIM_PKGVAR:-}" ] \
          && [ -f "${TRIM_APPDEST}/docker/docker-compose.yaml" ]; then
+        # 加超时：引擎是 Java+redis+rocketmq 的栈，优雅退出可能很慢。
+        # 停用接口一旦超时，界面就是那句看不出原因的 Request failed。
         ( cd "${TRIM_APPDEST}/docker" && \
           TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGVAR="$TRIM_PKGVAR" \
-          docker compose -p "$proj" stop ) >/dev/null 2>&1
+          timeout 15 docker compose -p "$proj" stop ) >/dev/null 2>&1
       fi
-      docker stop "$ENGINE" "$GATEWAY" >/dev/null 2>&1
+      timeout 20 docker stop -t 5 "$ENGINE" "$GATEWAY" >/dev/null 2>&1
     fi
     exit 0
     ;;

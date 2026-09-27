@@ -17,4 +17,13 @@ fv_prepare_fonts
 #          这种情况没有「缺卷」可检测，只有重建才会让旧挂载消失。
 fv_sync_volumes "${wizard_volumes:-}" rebuild >/dev/null
 
+# 顺带跑一次开放 API 预检（只读，不阻塞、不报错）。
+# 为什么挂在「保存设置」上：`cmd/main start` 只在应用经历「停止 → 启动」状态迁移时才被调用，
+# 而实际使用中应用很少停过（停用本身还可能失败），于是预检根本不会执行。
+# 挂在这里 —— 保存一次设置就能拿到结论。
+if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
+  . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
+  fv_acl_probe
+fi
+
 exit 0

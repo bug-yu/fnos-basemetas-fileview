@@ -218,6 +218,42 @@ fv_write_env() {
 }
 
 # ---------------------------------------------------------------------------
+# 3b. 把 compose 里的 ${TRIM_*} 就地替换成真实路径
+# ---------------------------------------------------------------------------
+# 为什么必须做（「点停用报 Request failed」的高度嫌疑）：
+#   compose 里的
+#       - "${TRIM_PKGVAR}/fonts:/usr/local/share/fonts:ro"
+#       - "${TRIM_APPDEST}/docker:/etc/nginx/conf.d:ro"
+#   靠变量插值。而 TRIM_APPDEST / TRIM_PKGVAR **只有飞牛框架执行应用脚本时才注入**。
+#   一旦框架自己那次 `docker compose`（停用 / 卸载 / 更新都会用到）没有这两个变量，
+#   compose 就会把 ":/app/target:rw" 解析成非法挂载并整体失败：
+#       invalid spec: :/app/target:rw: empty section between colons
+#   → 界面只报一句 Request failed, please try again later，看不出真因。
+#   .env 只能救「在 compose 同目录执行」这一种情况，救不了别的工作目录。
+#
+# 所以这里直接把变量替换成字面量，compose 从此不依赖任何环境变量：
+#   升级时框架重新释放 app.tgz 会把模板（含 ${TRIM_*}）覆盖回来，我们下次回调再替换一次。
+fv_materialize_env() {
+  [ -f "$FV_COMPOSE" ] || return 1
+  [ -n "${TRIM_APPDEST:-}" ] || return 1
+  [ -n "${TRIM_PKGVAR:-}" ]  || return 1
+  # 已经是字面量（没有 ${TRIM_ 了）就直接返回，保持幂等
+  grep -q '\${TRIM_' "$FV_COMPOSE" 2>/dev/null || return 0
+
+  local tmp="${FV_COMPOSE}.mat"
+  sed -e "s|\${TRIM_APPDEST}|${TRIM_APPDEST}|g" \
+      -e "s|\${TRIM_PKGVAR}|${TRIM_PKGVAR}|g" \
+      "$FV_COMPOSE" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
+  if [ -s "$tmp" ]; then
+    mv "$tmp" "$FV_COMPOSE"
+    fv_log "已把 compose 里的 \${TRIM_*} 替换为真实路径（不再依赖框架注入环境变量）"
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+
+# ---------------------------------------------------------------------------
 # 4. 统一入口：解析 → 写挂载段 → 写 .env → 记住设置 → 核对容器
 # ---------------------------------------------------------------------------
 # 所有回调（安装 / 保存设置 / 升级 / 启动）都走这里，避免任何一条路径漏掉重写。
@@ -250,6 +286,7 @@ fv_sync_volumes() {
     fv_log "错误：挂载段写入失败（设置=${raw} 实际=${list}），请检查 ${FV_COMPOSE} 的 VOLUMES_BEGIN/END 标记是否还在"
   fi
   fv_write_env
+  fv_materialize_env
 
   case "$mode" in
     rebuild) fv_rebuild ;;
