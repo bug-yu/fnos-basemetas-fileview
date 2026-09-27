@@ -21,6 +21,7 @@
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
 | `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
+| `tools/fv-docker-doctor.sh` | NAS 上一键**诊断 Docker 侧**问题（安装报 `layer does not exist` / 拉不动镜像时用，只读） |
 | `CHANGELOG.md` | 版本更新说明 |
 
 > `.fpk` 里装的是「怎么跑」而不是「跑什么」：预览引擎镜像 `basemetas/fileview:1.5.2`（约 863 MB）在**安装时**从 Docker Hub 拉取，不在包内。这也是飞牛官方 Docker 应用的标准形态。
@@ -212,6 +213,61 @@ bash tools/fv-doctor.sh
 bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带实测某个具体文件能不能读
 ```
 
+
+### 安装报 `layer does not exist`
+
+安装时弹出：
+
+```
+gateway Pulling
+acl Pulling
+fileview Pulling
+acl Pulled
+Error response from daemon: layer does not exist
+```
+
+这是 **Docker daemon 的镜像层问题，与本应用无关**：报错发生在 `docker pull` 阶段，比安装包里的任何脚本都早；本应用只做容器级操作（`docker rm -f`、`compose down`），**从不 `rmi` / `prune`**，卸载也不会删镜像。
+
+先跑只读诊断，它会指出到底是磁盘、悬挂层还是层库损坏：
+
+```bash
+bash tools/fv-docker-doctor.sh
+```
+
+最常见的三种成因：
+
+| 成因 | 判据（看诊断的哪一节） |
+|---|---|
+| Docker 数据根所在分区**写满或 inode 用尽** → 层解压中断，留下残缺引用 | 第 1 节 `df -h` / `df -i` |
+| 某次 pull 被中断（断电、重启、磁盘满）→ 内容库留下悬挂引用 | 第 4 节有 `<none>` 无标签镜像 |
+| overlay2 层库损坏 | 第 6 节 daemon 日志 |
+
+**修法（由轻到重，先试前面的）**：
+
+```bash
+# 1. 直接重试安装（若是瞬时问题，这一步就好了）
+
+# 2. 手工重拉，看能否复现、报什么
+docker pull nginx:alpine
+docker pull basemetas/fileview:1.5.2
+
+# 3. 报同样的错 → 把这两个镜像清掉再拉（只影响本应用）
+docker rmi -f nginx:alpine basemetas/fileview:1.5.2
+docker pull nginx:alpine && docker pull basemetas/fileview:1.5.2
+
+# 4. 还不行 → 重启 daemon，让它重建内容库索引
+systemctl restart docker
+docker pull nginx:alpine && docker pull basemetas/fileview:1.5.2
+
+# 5. 还不行 → 清掉无标签的悬挂层（相对安全）
+docker image prune -f
+```
+
+> ⚠️ **不要一上来就 `docker system prune -a`**：它会删掉**所有未被容器使用的镜像**，包括你 NAS 上其它应用的 —— 那些应用下次启动会重新拉一遍，离线或镜像源不通时直接起不来。只有确认磁盘满了、且愿意承担这个代价时再用。
+>
+> 层库真损坏（上面全无效）才考虑重建数据根：停 docker → `mv /var/lib/docker /var/lib/docker.bak` → 起 docker。**所有容器、镜像、卷都会消失**，动手前务必确认没有别的应用依赖它。
+
+> 💡 如果诊断显示是**磁盘满**：0.5.22 起引擎的转换产物和临时文件已从「容器可写层」改挂到 `${TRIM_PKGVAR}/data`（见上面「数据与日志目录」），不会再无限往系统盘堆。这次损坏是历史遗留，清理完就能正常装。
 
 ### 卸载失败（`Request failed`）
 
