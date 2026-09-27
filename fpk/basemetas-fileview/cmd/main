@@ -1,9 +1,10 @@
 #!/bin/bash
 # 应用运行控制脚本
 # start / stop 的实际启停动作由框架按 config/resource 里的 docker-project 资源执行，
-# 这里主要做两件事：
+# 这里主要做三件事：
 #   1. start 前做「安装完整性预检」
-#   2. status 如实回报容器状态
+#   2. start 前把存储卷挂载段同步一遍（升级/恢复后自愈的关键点）
+#   3. status 如实回报容器状态
 
 ENGINE="basemetas-fileview-engine"
 GATEWAY="basemetas-fileview-gateway"
@@ -16,7 +17,7 @@ is_running() {
 }
 
 # 安装完整性检查
-# 背景（2026-09-26 踩坑）：安装包内的 app.tgz 若未释放到 ${TRIM_APPDEST}，
+# 背景：安装包内的 app.tgz 若未释放到 ${TRIM_APPDEST}，
 # docker 会因 bind 挂载源不存在而报
 #   "not a directory: Are you trying to mount a directory onto a file"
 # 这种报错完全看不出真正原因。这里提前判断并给出人话提示。
@@ -40,17 +41,24 @@ case "$1" in
       exit 1
     fi
     # 清掉可能残留的 app.sock
-    # 背景（2026-09-26 踩坑）：它落在 ${TRIM_APPDEST} 这个宿主机目录里，容器删了文件还在。
+    # 背景：它落在 ${TRIM_APPDEST} 这个宿主机目录里，容器删了文件还在。
     # nginx 不会自己清理已存在的 unix socket，下次启动直接
     #   bind() ... failed (98: Address already in use) → 退出 → Restarting 死循环。
     # compose 的启动命令里也清了一次，这里是双保险（覆盖升级路径上 compose 命令可能还没换过来）。
     rm -f "${TRIM_APPDEST}/app.sock" 2>/dev/null
 
-    # 补生成 docker/.env：覆盖升级时旧版本没有这个文件，
-    # 有了它，在命令行手工 docker compose up -d 也不会因 TRIM_* 为空而报 invalid spec。
+    # 同步存储卷挂载段（幂等；顺带补生成 docker/.env）。
+    #
+    # 背景（这是「升级完 vol3 又预览不了」的根治点）：
+    #   升级时框架会把新的 app.tgz 重新释放到 ${TRIM_APPDEST}，
+    #   docker/docker-compose.yaml 被覆盖回安装包模板里写死的 /vol1、/vol2，
+    #   之前按设置写好的 /vol3 就此丢失。手工改过、从备份恢复、旧版本升上来也一样。
+    #   框架紧接着就会用这份 compose 起容器，所以这里是成本最低的「自愈」点 ——
+    #   写在这里，用户不必再去「设置」里保存一次才能让新加的盘生效。
     if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
       . "${TRIM_APPDEST}/docker/fv-volumes.sh"
-      fv_write_env
+      fv_prepare_fonts
+      fv_sync_volumes "" ensure >/dev/null
     fi
 
     # 保证自定义字体目录存在（compose 把 ${TRIM_PKGVAR}/fonts 挂到容器 /usr/local/share/fonts）
@@ -66,6 +74,21 @@ case "$1" in
     ;;
 
   stop)
+    # 框架对 docker-project 资源本来会自己停容器，但实测出现过
+    #   「无法停用 basemetas-fileview / Request failed, please try again later」。
+    # 这里显式兜一层：先按 compose 项目停，再按容器名停（重复停是无害的）。
+    # 停不掉会连带让「卸载 / 重装」也做不了，所以值得多这一层。
+    if command -v docker >/dev/null 2>&1; then
+      proj="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' \
+              "$ENGINE" 2>/dev/null)"
+      if [ -n "$proj" ] && [ -n "${TRIM_APPDEST:-}" ] && [ -n "${TRIM_PKGVAR:-}" ] \
+         && [ -f "${TRIM_APPDEST}/docker/docker-compose.yaml" ]; then
+        ( cd "${TRIM_APPDEST}/docker" && \
+          TRIM_APPDEST="$TRIM_APPDEST" TRIM_PKGVAR="$TRIM_PKGVAR" \
+          docker compose -p "$proj" stop ) >/dev/null 2>&1
+      fi
+      docker stop "$ENGINE" "$GATEWAY" >/dev/null 2>&1
+    fi
     exit 0
     ;;
 

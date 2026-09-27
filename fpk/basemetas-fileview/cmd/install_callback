@@ -14,9 +14,8 @@ LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 . "$LIB"
 
 fv_prepare_fonts
-
-LIST="$(fv_resolve_volumes "${wizard_volumes:-auto}")"
-fv_write_volumes "$LIST"
-fv_write_env
+# ensure：容器若已存在（框架可能先建了容器再跑本回调），进容器核对一遍，
+#         缺卷就重建；容器还不存在时什么都不做，交给框架首次创建。
+fv_sync_volumes "${wizard_volumes:-}" ensure >/dev/null
 
 exit 0

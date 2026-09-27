@@ -18,6 +18,8 @@
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
 | `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`selfcheck.sh`） |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
+| `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
+| `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
 | `CHANGELOG.md` | 版本更新说明 |
 | `自动更新/` | 自动更新方案（脚本 + 向导答案模板 + 操作手册） |
 
@@ -33,7 +35,7 @@
 
 ### 更新
 
-改配置后**重新打包**（见下），再升级安装：应用中心 → 卸载 → 重新「手动安装」新版 `.fpk`（镜像复用，重装很快）。若仅临时改 `nginx.conf`，也可直接在「管理员视角」下编辑 `@appcenter/basemetas-fileview/docker/nginx.conf` 后重启网关容器，不必重装。
+改配置后**重新打包**（见下），再升级安装。0.5.8 起**可以就地升级**（版本号递增即可，不必先卸载）；若走「卸载 → 重新手动安装」也一样安全（镜像复用，重装很快）。若仅临时改 `nginx.conf`，也可直接在「管理员视角」下编辑 `@appcenter/basemetas-fileview/docker/nginx.conf` 后重启网关容器，不必重装。
 
 ## 支持的文件类型
 
@@ -108,15 +110,54 @@ FileView 需以**同名同路径**只读挂载存储卷（`/vol1:/vol1:ro`），
 
 > 注意：bind 挂载在容器创建时确定，只改配置不重建容器是**不会**生效的（`docker restart` 也不行）。这就是 0.5.6 之前「设置里明明有 `/vol3`，预览还是报文件不存在」的原因。
 
+> ⚠️ **升级会顶掉挂载段**：升级时框架把新的 `app.tgz` 重新释放到 `${TRIM_APPDEST}`，`docker/docker-compose.yaml` 会被覆盖回安装包模板里写死的 `/vol1`、`/vol2`。所以任何「释放文件」之后的时机都必须重写一遍挂载段 —— 0.5.8 起 `cmd/upgrade_callback` 与 `cmd/main start` 都会做这件事（**升级后不必再去设置里保存一次**）。
+
+向导里填的值会持久化到 `${TRIM_PKGVAR}/volumes.conf`，升级/重启时按「本次向导值 → 上次保存的设置 → `auto`」的顺序取值；同步结果记在 `${TRIM_PKGVAR}/fv-volumes.log`。
+
+> 💡 **为什么探测要取并集（0.5.8 修的那个 bug）**：存储卷不一定都是独立挂载点。
+> 实测有这种机器：`/vol1`、`/vol2` 在 `/proc/mounts` 里是独立挂载点，`/vol3` 却只是个目录。
+> 旧写法「只要探到任意一个挂载点就不再看目录」会静默漏掉 `/vol3` ——
+> 而 `/vol1`、`/vol2` 一切正常，看起来完全不像配置问题。
+> 现在改成「挂载点 ∪ `/volN` 目录」取并集，两种情况都覆盖。
+
 ### 故障修复
 
-遇到「引擎容器 Up、网关容器 Restarting」或「新加的盘预览不了」，在 NAS 上用 root 执行：
+遇到「引擎容器 Up、网关容器 Restarting」或「某个盘预览报文件不存在」，在 NAS 上用 root 执行：
 
 ```bash
 bash tools/fv-repair.sh
 ```
 
 脚本会依次做：探测存储卷 → 重写 compose 挂载段 → 清理残留 `app.sock` → 重建容器 → 验证并打印状态；网关仍未起来时会直接把日志打出来。
+
+想先确认「到底是不是挂载的问题」，可以**手工指定卷列表**跑一次 —— 这一步完全绕开自动探测，能直接给出答案：
+
+```bash
+VOLS="/vol1,/vol2,/vol3" bash tools/fv-repair.sh
+```
+
+> ⚠️ **不要在应用目录里裸跑 `docker compose up -d`**
+> `docker compose` 默认拿**目录名**当项目名（这个目录叫 `docker`），于是容器会挂到 `docker` 项目下，
+> 而飞牛应用中心是按 `config/resource` 声明的 `basemetas-fileview` 来管容器的 —— 两边对不上，容器就**脱管**了：
+> 点「停用」报 `Request failed, please try again later`，保存设置 / 更新也不会重建容器，**新加的卷永远挂不上**。
+> 一定要手工操作时，务必带上项目名：
+> ```bash
+> cd /vol1/@appcenter/basemetas-fileview/docker
+> TRIM_APPDEST=/vol1/@appcenter/basemetas-fileview \
+> TRIM_PKGVAR=/vol1/@appdata/basemetas-fileview \
+> docker compose -p basemetas-fileview up -d
+> ```
+> 已经脱管了就跑 `bash tools/fv-repair.sh`，它会自动纠正项目名。
+
+指定后 `/vol3` 能预览了 → 问题就在探测/挂载；还是不行 → 问题不在挂载，去看 `fv-volumes.log` 和引擎容器日志。
+
+想知道**具体是哪一环断的**（宿主机没这个卷？挂载段没写进去？容器里其实没挂上？容器里读不到？），先跑诊断脚本 —— 它只读、不改任何东西：
+
+```bash
+bash tools/fv-doctor.sh
+bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带实测某个具体文件能不能读
+```
+
 
 ### 卸载失败（`Request failed`）
 
@@ -130,12 +171,8 @@ bash fv-uninstall-fix.sh
 
 脚本会按容器名强删、按项目名幂等 down、备份并移除应用目录、重启应用中心服务刷新 UI。
 
-**以后避免**：不要直接 `docker compose up -d`；如必须调试，请用：
-
-```bash
-cd /vol1/@appcenter/basemetas-fileview/docker
-docker compose -p basemetas-fileview up -d
-```
+**以后避免**：不要裸跑 `docker compose up -d`（务必带 `-p basemetas-fileview`），
+具体命令见上一节「故障修复」里的警告框。
 
 ### 自定义字体
 
@@ -154,6 +191,22 @@ docker compose -p basemetas-fileview up -d
 - ✅ 统一网关先校验登录态，未登录访问被挡在网关层；不对外暴露任何端口。
 - ⚠️ **FileView 自身不按用户区分权限**：凡能登录飞牛的用户，打开 `/app/basemetas-fileview/...` 都能预览已挂载卷里的文件。多账号 / 访客环境建议只挂载可公开的卷。
 - ✅ 存储卷只读挂载，且仅限向导里填写的卷。
+- ⚠️ **应用用户加入了 `docker` 组**（`config/privilege` 里的 `join-groups: ["docker"]`）。
+
+  这是必需的：本应用的「保存设置后自动重建容器」「如实上报运行状态」「停用」都要以应用用户身份
+  操作 `docker`，而 `/var/run/docker.sock` 是 `root:docker 0660`。不加这一项，
+  这些动作会**全部静默失败** —— 这正是 0.5.6 及更早版本「改了存储卷设置不生效、新加的盘永远预览不了」的真因。
+
+  请知悉这等于把 docker socket 交给该应用用户（约等于 root）。本应用本来就要以 root 在容器里跑
+  预览引擎、只读挂载全部存储卷，权限模型上并没有变得更弱；但**换机器部署前请确认你接受这一点**。
+  不想给这个权限的话，就只能放弃「改设置自动生效」，改完设置后手工重建容器：
+
+  ```bash
+  cd /vol1/@appcenter/basemetas-fileview/docker
+  TRIM_APPDEST=/vol1/@appcenter/basemetas-fileview \
+  TRIM_PKGVAR=/vol1/@appdata/basemetas-fileview \
+  docker compose -p basemetas-fileview up -d --force-recreate
+  ```
 
 ## 重新打包
 
@@ -176,7 +229,7 @@ build.bat
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.7`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.8`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -191,8 +244,9 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
-| **0.5.7** | 修复卸载失败（手动 `docker compose up -d` 未指定项目名导致容器脱离管理）；新增 `tools/fv-uninstall-fix.sh` 用于修复已卡住的卸载状态 |
-| 0.5.6 | 修复网关容器无限重启（残留 `app.sock`）；存储卷默认 `auto` 自动挂载全部 `/volN`；保存设置即自动重建容器；新增 `tools/fv-repair.sh` |
+| **0.5.8** | 修复「某个盘（如 `/vol3`）报文件不存在」—— 根因是**应用用户没有 docker 权限**，所有 docker 操作静默失败、容器从安装起就没被重建过；`config/privilege` 现声明 `join-groups: ["docker"]`。另加：容器挂载核对（区分「没有」和「空目录」）、探测取并集、`fv-volumes.log` 留痕、`tools/fv-doctor.sh` |
+| **0.5.7** | 修复卸载失败（手动 `docker compose up -d` 未指定项目名导致容器脱离管理）；新增 `tools/fv-uninstall-fix.sh` |
+| **0.5.6** | 修复网关容器无限重启（残留 `app.sock`）；存储卷默认 `auto` 自动挂载全部 `/volN`；保存设置即自动重建容器；新增 `tools/fv-repair.sh` |
 | 0.5.5 | 修复 Excel / CSV 打开后无限转圈（网关层改写前端 `credentials: 'omit'`） |
 | 0.5.4 | 支持自定义字体（挂到 `${TRIM_PKGVAR}/fonts`） |
 | 0.5.3 | 入口精简为只保留「用 FileView 打开」 |

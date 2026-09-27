@@ -1,7 +1,7 @@
 #!/bin/bash
 # 在应用「设置」里改存储卷后：重建挂载段 + **重建容器**。
 #
-# ⚠️ 第二步是重点（2026-09-26 踩坑）：
+# ⚠️ 第二步是重点：
 #   只改 docker-compose.yaml 是不够的 —— bind 挂载不会在运行中的容器里生效，
 #   docker restart 也不行，必须重建容器。而飞牛框架保存设置后不会重建容器，
 #   所以这一步必须自己做，否则就是「设置里明明有 /vol3，预览还是报文件不存在」。
@@ -13,12 +13,8 @@ LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 . "$LIB"
 
 fv_prepare_fonts
-
-LIST="$(fv_resolve_volumes "${wizard_volumes:-auto}")"
-fv_write_volumes "$LIST"
-fv_write_env
-
-# 重建容器，让新的挂载段真正生效
-fv_rebuild
+# rebuild：这里必须**无条件**重建容器 —— 用户可能是把某个卷从列表里去掉，
+#          这种情况没有「缺卷」可检测，只有重建才会让旧挂载消失。
+fv_sync_volumes "${wizard_volumes:-}" rebuild >/dev/null
 
 exit 0

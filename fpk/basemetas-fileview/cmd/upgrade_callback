@@ -1,2 +1,23 @@
 #!/bin/bash
+# 升级后：把挂载段重新写一遍，并重建容器。
+#
+# ⚠️ 这个回调以前是空壳，是一个真 bug —— 现象就是「升级完 vol3 又预览不了」：
+#   升级时框架会把新的 app.tgz 重新释放到 ${TRIM_APPDEST}，
+#   docker/docker-compose.yaml 因此被**覆盖回安装包里的模板内容**
+#   （模板的挂载段是写死的 /vol1、/vol2），此前按设置写好的 /vol3 就被顶掉了；
+#   而升级回调是空的，没有任何人再写一遍。
+#   框架紧接着用这份 compose 重建容器 → /vol3 里的文件一律「文件不存在」。
+#
+# 取值优先级：升级向导变量（本包没有 wizard/upgrade，通常为空）
+#            → 上次保存的设置（${TRIM_PKGVAR}/volumes.conf）
+#            → auto
+
+LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
+[ -r "$LIB" ] || exit 0
+. "$LIB"
+
+fv_prepare_fonts
+# rebuild：升级一定会换 compose，无条件重建容器最省事也最稳。
+fv_sync_volumes "${wizard_volumes:-}" rebuild >/dev/null
+
 exit 0

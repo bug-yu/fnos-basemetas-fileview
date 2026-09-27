@@ -1,0 +1,21 @@
+# ===== 换行符 =====
+#
+# 本仓库的东西最终会被 fnpack 打进 .fpk，丢到 Linux（飞牛 fnOS）上运行。
+# CRLF 的 shell 脚本会让 shebang 变成 "#!/bin/bash\r"，
+# 直接报 `bad interpreter: No such file or directory` 起不来，而且报错完全看不出原因。
+# 同理，cmd/ 下的生命周期脚本一旦是 CRLF，回调就是「静默不执行」。
+#
+# 所以这些路径统一锁成 LF。Windows 上想要 CRLF 工作副本，
+# 用 `git config core.autocrlf true` 让 Git 在检出时转换，不要提交 CRLF。
+#
+# 说明：仓库历史上是混着的（cmd/、docker-compose.yaml 是 LF，
+# nginx.conf、ui/config、README.md 是 CRLF），本文件把这笔账一次理清。
+
+*.sh                                  text eol=lf
+*.md                                  text eol=lf
+fpk/basemetas-fileview/cmd/*          text eol=lf
+fpk/basemetas-fileview/app/docker/*   text eol=lf
+fpk/basemetas-fileview/app/ui/*       text eol=lf
+fpk/basemetas-fileview/wizard/*       text eol=lf
+fpk/basemetas-fileview/config/*       text eol=lf
+fpk/basemetas-fileview/manifest       text eol=lf

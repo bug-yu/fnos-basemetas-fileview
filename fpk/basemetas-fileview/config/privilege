@@ -3,5 +3,6 @@
     "run-as": "package"
   },
   "username": "basemetas-fileview",
-  "groupname": "basemetas-fileview"
+  "groupname": "basemetas-fileview",
+  "join-groups": ["docker"]
 }
