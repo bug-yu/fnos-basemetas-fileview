@@ -177,9 +177,13 @@ fv_write_volumes() {
   IFS="$OLD_IFS"
 
   tmp="${FV_COMPOSE}.new"
+  # 同时重写两处：引擎的挂载段，以及权限闸门容器的挂载段
+  # （闸门必须在与引擎相同的文件系统视图上做判定，所以两份卷清单必须一致）
   if awk -v block="$block" '
-    /## VOLUMES_BEGIN/ { print; printf "%s", block; skip=1; next }
-    /## VOLUMES_END/   { skip=0 }
+    /## VOLUMES_BEGIN/     { print; printf "%s", block; skip=1; next }
+    /## VOLUMES_END/       { skip=0 }
+    /## VOLUMES_ACL_BEGIN/ { print; printf "%s", block; skip=1; next }
+    /## VOLUMES_ACL_END/   { skip=0 }
     skip != 1 { print }
   ' "$FV_COMPOSE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
     if cmp -s "$tmp" "$FV_COMPOSE" 2>/dev/null; then
@@ -257,6 +261,34 @@ fv_materialize_env() {
 }
 
 # ---------------------------------------------------------------------------
+# 4d. 写逐用户权限闸门的开关
+# ---------------------------------------------------------------------------
+# mode=enforce  不可读的文件直接 403（**默认**）
+# mode=log      只把判定结果写进闸门日志，不拦截（出现误拦时的应急开关）
+# 闸门每次请求现读这个文件，所以改完立即生效，不用重启容器。
+#
+# ⚠️ 只在文件不存在时写入默认值；已存在的值不覆盖 ——
+#    这样手工改成 log 的应急设置不会被后续的保存设置/启动冲掉。
+fv_write_acl_conf() {
+  [ -n "${TRIM_PKGVAR:-}" ] || return 0
+  local conf="${TRIM_PKGVAR}/acl.conf" mode="${1:-}"
+  if [ -z "$mode" ] && [ -r "$conf" ]; then
+    mode="$(sed -n 's/^mode=//p' "$conf" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+  fi
+  case "$mode" in log) ;; *) mode="enforce" ;; esac
+
+  mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+  {
+    echo "# FileView 逐用户权限闸门开关（由应用写入，改完立即生效，不必重启容器）"
+    echo "#   enforce 不可读的文件直接返回 403（默认）"
+    echo "#   log     只记录判定结果，不拦截（出现误拦时的应急开关）"
+    echo "# 看判定过程： docker logs basemetas-fileview-acl"
+    echo "mode=${mode}"
+  } > "$conf" 2>/dev/null
+  return 0
+}
+
+# ---------------------------------------------------------------------------
 # 4. 统一入口：解析 → 写挂载段 → 写 .env → 记住设置 → 核对容器
 # ---------------------------------------------------------------------------
 # 所有回调（安装 / 保存设置 / 升级 / 启动）都走这里，避免任何一条路径漏掉重写。
@@ -290,6 +322,8 @@ fv_sync_volumes() {
   fi
   fv_write_env
   fv_materialize_env
+  # 闸门开关：向导里填了就用向导值，没填就保持现值（main start 这类时机拿不到向导变量）
+  fv_write_acl_conf "${wizard_acl_gate:-}"
 
   case "$mode" in
     rebuild) fv_rebuild ;;
@@ -423,7 +457,7 @@ fv_rebuild() {
 # 4b. 核对引擎容器里**真的**能看到这些卷，缺了就重建
 # ---------------------------------------------------------------------------
 # 为什么需要（实测踩到的坑）：
-#   引擎容器的日志里报 `文件不存在: /vol3/1000/某目录/某文件.ofd`，而同一时刻 /vol1 的文件
+#   引擎容器的日志里报 `文件不存在: /vol1/1000/某目录/某文件.ofd`，而同一时刻 /vol1 的文件
 #   一切正常 —— 说明请求链路没问题，是 **/vol3 根本没挂进引擎容器**。
 #   而「只改 docker-compose.yaml」在两种情况下是不够的：
 #     ① 飞牛框架可能在我们回调之前就用模板把容器建好了，之后未必再 `compose up`；

@@ -13,13 +13,14 @@
 
 | 路径 | 说明 |
 |---|---|
-| `basemetas-fileview.fpk` | 可直接安装的安装包（约 45 KB，不含镜像） |
+| `basemetas-fileview.fpk` | 安装包 —— **构建产物，不在仓库里**（`.gitignore` 排除）。用 `fpk/build.sh` 或 `build.bat` 现场生成，或从 [Releases](../../releases) 下载 |
 | `fpk/basemetas-fileview/` | 安装包工程源码（改配置改这里） |
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
 | `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`selfcheck.sh`） |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
+| `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
 | `CHANGELOG.md` | 版本更新说明 |
 | `自动更新/` | 自动更新方案（脚本 + 向导答案模板 + 操作手册） |
 
@@ -79,19 +80,23 @@ Unix Socket app.sock
 FileView 引擎容器  http://fileview:80/preview/view?path=/vol1/...
 ```
 
-### 两个容器
+### 三个容器
 
 | 容器 | 镜像 | 作用 |
 |---|---|---|
 | `basemetas-fileview-engine` | `basemetas/fileview:1.5.2` | 预览引擎 |
-| `basemetas-fileview-gateway` | `nginx:alpine` | 监听 `app.sock`，适配引擎，转发 |
+| `basemetas-fileview-gateway` | `nginx:alpine` | 监听 `app.sock`，适配引擎，转发；调闸门做权限校验 |
+| `basemetas-fileview-acl` | `python:3-alpine` | 逐用户权限闸门（0.5.15 起），以目标用户身份判定能否读该文件 |
 
-两个容器都**不发布宿主机端口**，只能从统一网关进入。网关容器做目录级挂载：
+三个容器都**不发布宿主机端口**，只能从统一网关进入。网关容器做目录级挂载：
 
 ```yaml
 - "${TRIM_APPDEST}/docker:/etc/nginx/conf.d:ro"   # 配置目录
 - "${TRIM_APPDEST}:/app/target:rw"                # 创建 app.sock
 ```
+
+闸门容器只读挂载与引擎**相同**的存储卷，外加宿主机的 `/etc/passwd`、`/etc/group`
+（用来还原目标用户的主组与附加组）。它不碰 docker、不写任何文件。
 
 ## 配置
 
@@ -189,7 +194,9 @@ bash fv-uninstall-fix.sh
 ## 安全说明
 
 - ✅ 统一网关先校验登录态，未登录访问被挡在网关层；不对外暴露任何端口。
-- ⚠️ **FileView 自身不按用户区分权限**：凡能登录飞牛的用户，打开 `/app/basemetas-fileview/...` 都能预览已挂载卷里的文件。多账号 / 访客环境建议只挂载可公开的卷。
+- ✅ **按用户区分权限（0.5.17 起默认开启）**：飞牛统一网关会把当前登录用户放进 `X-Trim-Userid`，闸门容器据此**以该用户的身份**检查目标文件能否读取，没有读权限就返回 403。
+  不需要任何设置。团队文件 / 共享文件按你在飞牛里设的权限正常放行；静态资源不参与判定。
+  看判定过程：`docker logs basemetas-fileview-acl`；出现误拦时的应急开关见下面「按用户区分权限」一节。
 - ✅ 存储卷只读挂载，且仅限向导里填写的卷。
 - ⚠️ **应用用户加入了 `docker` 组**（`config/privilege` 里的 `join-groups: ["docker"]`）。
 
@@ -208,55 +215,105 @@ bash fv-uninstall-fix.sh
   docker compose -p basemetas-fileview up -d --force-recreate
   ```
 
-## 按用户区分权限（进行中）
+## 按用户区分权限（0.5.15 已实现）
 
-**现状**：容器以 root 挂载全部存储卷，等于绕过了飞牛的用户 ACL ——
+**旧问题**：容器以 root 挂载全部存储卷，等于绕过了飞牛的用户 ACL ——
 凡能登录飞牛的用户，打开 `/app/basemetas-fileview/...` 都能预览已挂载卷里的文件。
 
-**目标**：管理员用「授权目录」把固定目录授给应用（不要求用户逐个授权）；
-之后每次请求在网关层按当前用户校验目标路径的读权限，`readable: false` 直接 403。
+**现在的做法**：
 
-**环境要求**（开放 API 的硬门槛）：
-
-| 项 | 要求 |
-|---|---|
-| 飞牛 fnOS | **≥ 1.2.0401** |
-| 飞牛 App | **≥ 1.34.0** |
-
-低于该版本的机器仍可正常预览，但只能靠「只挂载可公开的卷」控制可见范围。
-`manifest.os_min_version` 暂未上抬（本版只是预检，不依赖开放 API）；等闸门成为必需功能时再抬。
-
-用到的飞牛开放 API（[文档](https://developer.fnnas.com/api/calling/)）：
-
-| 用途 | 接口 / 头 |
-|---|---|
-| 当前用户 | 网关转发 `X-Trim-Userid` / `X-Trim-Isadmin` / `X-Trim-Username` |
-| 管理员授权目录 | 前端 `pickSharedFile` / `authorizeSharedFile`；后端 `trim.file.getSharedAccessibleFolders` |
-| 按用户校验权限 | 后端 `trim.file.checkUserACL` `{uid, path}` → `{readable, writable, deletable}` |
-
-### 先跑预检（0.5.9 起自带）
-
-闸门能不能落地，取决于三件只能在真机上验证的事。0.5.9 起应用**每次启动**都会只读地探一遍，
-结果写在 `@appdata/basemetas-fileview/fv-volumes.log`：
-
-```bash
-# 在应用中心「重启」一次应用，然后看日志
-tail -40 /vol1/@appdata/basemetas-fileview/fv-volumes.log
+```
+浏览器 → 统一网关（注入 X-Trim-Userid）→ app.sock → nginx 网关容器
+    location /app/basemetas-fileview/  →  auth_request /__acl
+         /__acl → 闸门容器（python:3-alpine，root）
+                    fork → setgroups(按 /etc/group 算) → setgid → setuid(uid)
+                    → os.access(path, R_OK) → 200 / 403
+    → FileView 引擎容器
 ```
 
-它会回答：
+### 已默认开启（0.5.17 起）
 
-1. `TRIM_API_TOKEN` 有没有注入到应用脚本环境（官方要求不得持久化，只能这么探）；
-2. `/var/run/trim_open_gateway_apiscope.socket` 在不在、能不能访问；
-3. 管理员已授权哪些目录，`checkUserACL` 返回的是**真实权限**还是清一色 `false`。
+**不需要任何设置**。装上就生效：只有对该文件有读权限的人才能预览，否则 403。
 
-> 第 3 条是关键：官方文档写明「应用无权读取路径状态时，`readable/writable/deletable` 均为 `false`」。
-> 本应用目前没有走授权流程，所以必须先确认它返回真结果，否则闸门上线会把所有人挡住。
->
-> 另外：`auth_request` 只认 HTTP 状态码，而飞牛这个接口是 `200` + body 里的 `code`/`data`，
-> 所以**纯 nginx 配置做不到**，闸门必须落在能解析 JSON 的一层（小鉴权服务 / 支持脚本的网关镜像）。
+- 团队文件、共享文件按你在飞牛里设的权限正常放行；
+- 判定读的是飞牛的 ACL，不是 POSIX 模式位（实测：模式位是 `0000` 但 ACL 允许读的文件，会正确判为可读）；
+- 静态资源（css/js/图片）不参与判定，避免噪音。
 
-在预检结论确认前，多账号 / 访客环境请继续沿用上面的办法：只挂载可公开的卷。
+**先确认身份头能到**（需要登录态，用浏览器打开）：
+
+```
+https://<你的域名>/app/basemetas-fileview/__whoami
+→ 应显示 uid=<uid> | user=<用户名> | isadmin=true
+```
+
+看不到 `uid=…` 说明网关没传身份头，此时闸门不生效（但也不会拦你）。
+
+**看判定过程**：`docker logs basemetas-fileview-acl`
+
+### 出现误拦怎么办
+
+设置界面里**没有**开关（不需要），应急开关在应用数据目录的一个文件里：
+
+```bash
+# /vol{n}/@appdata/basemetas-fileview/acl.conf
+mode=enforce   →   mode=log      # 退回「只记录不拦截」
+```
+
+改完**立即生效**，不用重启容器、不用重装。应用只在文件不存在时写默认值，
+**不会覆盖手工改动**，所以这个应急设置会留住。定位好问题后改回 `enforce` 即可。
+
+### 为什么不是简单的 `docker exec -u <uid> … test -r`
+
+`docker exec -u` **不会设置用户的附加组**。飞牛的「共享给设备内的用户」是按**用户**授权
+（uid 能覆盖），但**团队文件是按用户组授权**的 —— 那样会被误判成不可读，
+而**误拦会挡掉合法访问，是危险方向**。所以闸门 fork 子进程后按 `/etc/group`
+设好 `setgroups → setgid → setuid` 再判定，完整还原该用户的权限上下文。
+
+### 两道安全网
+
+- **闸门只在「确定不可读」时拒绝**：缺 uid、解析不到路径、查不到用户、判定异常
+  → 一律放行并记日志。
+- **闸门不可用时自动 fail-open**：`upstream aclgate` 里挂了本机回环上的「永远 200」服务，
+  闸门连不上时 nginx 自动 failover 过去 → 放行。最坏情况只是「没保护」，不会「应用打不开」。
+
+### 已知边界
+
+- `GET /preview/api/file?filePath=/opt/fileview/data/preview/<文件名>.pdf` 带的是**引擎内部转换产物**
+  路径，回溯不出原文件。0.5.16 起会**退回用来源页 URL 里的原始 `path` 判定**，正常流程（浏览器从预览页
+  发起）能被正确拦下；只有**手工构造、不带来源页**的请求才无法判定（此时 fail-open 放行）。
+  要彻底堵死需要闸门记录「哪个 uid 触发过哪个转换」，属后续可选项。
+- 用开放 API 的 `trim.file.checkUserACL` 是官方路线，但实测**走不通**
+  （应用脚本拿不到 `TRIM_API_TOKEN`，socket 是 `root:root 0660`），故未采用。
+
+
+### 背景：为什么不用飞牛的开放 API
+
+官方给的路线是 `trim.file.checkUserACL`（后端 API，scope `trim.file.userAcl`），
+但实测**走不通**：应用脚本里拿不到 `TRIM_API_TOKEN`，
+`/var/run/trim_open_gateway_apiscope.socket` 又是 `root:root 0660`。
+生态调研也印证了这一点 —— `grep checkUserACL` 在整个 `@appcenter` 里零使用。
+
+（若将来飞牛开放了 token 注入，可以改用官方接口；那时需要系统 ≥ 1.2.0401、App ≥ 1.34.0。
+现在的实现不依赖开放 API，所以 `manifest.os_min_version` 仍是 `1.2.0`。）
+
+### 诊断
+
+```bash
+# 1) 确认网关有没有把身份传进来（浏览器打开，需要登录态）
+https://<你的域名>/app/basemetas-fileview/__whoami
+#    → 应显示 uid=1000 | user=<用户名> | isadmin=true
+
+# 2) 看闸门的判定过程
+docker logs basemetas-fileview-acl
+
+# 3) 单独验证某个用户对某个文件的权限（在闸门容器里跑）
+docker exec basemetas-fileview-acl python3 /acl/fv-acl-gate.py --test 1001 /vol1/1000/某文件.ofx
+#    → 打印该用户的 主组 / 附加组，以及 可读 / 不可读 的结论
+```
+
+网关 `access_log` 里也加了 `uid=` / `isadmin=` 两列，日常请求就能看出身份有没有传进来。
+`@appdata/basemetas-fileview/fv-volumes.log` 里还留着启动时的开放 API 预检结果
+（token / socket / 已授权目录），将来若要改走官方路线可以拿它当参考。
 
 ## 重新打包
 

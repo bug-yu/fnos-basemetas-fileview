@@ -49,3 +49,36 @@ services:
       - "${TRIM_APPDEST}:/app/target:rw"
     environment:
       - TZ=Asia/Shanghai
+
+  # 逐用户权限闸门：nginx 用 auth_request 把每个预览请求交给它判定
+  #   见 app/docker/fv-acl-gate.py 头部注释。
+  #
+  # ⚠️ 以 root 运行是**必须的**：判定要 setuid 到目标用户（并按 /etc/group 设好附加组），
+  #    否则团队文件那种「按用户组授权」的场景会被误判成不可读。
+  #    它不碰 docker、不写任何文件，只做「以某用户身份问一句能不能读」。
+  #
+  # 开关：${TRIM_PKGVAR}/acl.conf 里的 mode=log（默认，只记录）/ enforce（真正拦截）。
+  #       闸门每次请求现读该文件，改完立即生效，不用重启容器。
+  acl:
+    image: python:3-alpine
+    container_name: basemetas-fileview-acl
+    restart: unless-stopped
+    depends_on:
+      - fileview
+    volumes:
+      # 宿主真实用户表：用来算目标用户的 主组 + 附加组
+      - /etc/passwd:/etc/passwd:ro
+      - /etc/group:/etc/group:ro
+      # 闸门脚本（只读）与模式开关所在目录（只读）
+      - "${TRIM_APPDEST}/docker:/acl:ro"
+      - "${TRIM_PKGVAR}:/acl-conf:ro"
+      # 与引擎**完全相同**的只读存储卷：判定必须在同一份文件系统视图上做。
+      # 下面几行由安装向导按你填写的存储卷自动重建，请勿删除 BEGIN / END 标记行
+      # ## VOLUMES_ACL_BEGIN
+      - /vol1:/vol1:ro
+      - /vol2:/vol2:ro
+      # ## VOLUMES_ACL_END
+    environment:
+      - TZ=Asia/Shanghai
+      - FV_ACL_MODE_FILE=/acl-conf/acl.conf
+    command: ["python3", "/acl/fv-acl-gate.py"]

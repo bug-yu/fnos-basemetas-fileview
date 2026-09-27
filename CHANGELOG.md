@@ -6,6 +6,230 @@
 
 ---
 
+## 0.5.17
+
+### 逐用户权限校验改为**默认开启**
+
+0.5.15 上线时默认是 `mode=log`（只记录不拦截），先观察再切。实测已经闭环：
+
+| 场景 | 结果 |
+|---|---|
+| 用户 A 打开用户 B 的私有文件 | **403 拦截** |
+| 用户 A 打开自己的文件 | 放行 |
+| 用户 A 打开团队文件（按组授权） | 放行 |
+| 静态资源（css/js） | 放行（不按文件权限拦） |
+| 转换产物 `/opt/…`（带来源页） | 按原始路径判定，不可读则拦 |
+| 模式位 `0000` 但 ACL 允许读的文件 | 判为**可读**（读的是 ACL，不是 POSIX 模式位） |
+
+所以本版把默认改成 **`enforce`**，并在设置页去掉切换开关（那一栏改成纯说明）。
+
+### 应急开关仍然保留（但不在设置界面里）
+
+万一出现误拦，把应用数据目录下的 `acl.conf` 改一行即可：
+
+```bash
+# /vol{n}/@appdata/basemetas-fileview/acl.conf
+mode=enforce   →   mode=log
+```
+
+改完**立即生效**，不用重启容器、也不用重装应用。
+应用只在文件不存在时写默认值，**不会覆盖手工改动**，所以这个应急设置能留住。
+
+看判定过程：`docker logs basemetas-fileview-acl`
+
+---
+
+## 0.5.16
+
+0.5.15 上线后跑了一遍实测（`docker logs basemetas-fileview-acl`），核心判定完全正确：
+
+```
+放行 uid=1000 path=/vol1/1000/某目录/….ofd —— 可读
+放行 uid=1003 path=/vol1/1000/某目录/….ofd —— 不可读（当前 mode=log，仅记录）
+```
+
+`--test` 也确认组查表正常（`用户 = 某用户  主组 gid=1001  附加组=（无）`）。
+但日志暴露了两个判定问题，本版修掉：
+
+### ① 静态资源不该按文件权限拦
+
+日志里出现了这一行：
+
+```
+放行 uid=1003 path=/vol1/1000/某目录/….ofd —— 不可读 | uri=…/preview/css/index-DvZ8zWmN.css
+```
+
+CSS / JS / 图片 / 字体不是用户的文件，却因为**来源页 URL 里有 path** 而被判成了「不可读」。
+在 `enforce` 模式下，被拦用户的样式和脚本会一起 403 —— 纯噪音。
+现在按扩展名直接放行。
+
+### ② 一个真实旁路：`/opt/fileview/data/preview/…`
+
+```
+放行 uid=1003 path=/opt/fileview/data/preview/….pdf —— 非存储卷路径（放行）
+```
+
+这条请求带的是**引擎内部转换产物**路径，回溯不出原文件，0.5.15 里一律放行 ——
+等于「只要知道转换后的文件名，就能把别人无权查看的文档直接取走」。而转换后的文件名
+就是从原名派生的（`X.ofd` → `X.pdf`），**是猜得出来的**。
+
+修法：请求自身带的路径不是存储卷路径时，**退回用来源页 URL 里的原始 path 判定**。
+正常流程一定是从预览页发起的，来源页里就有原始 `/vol…` 路径，于是这条被正确拦下。
+
+### 实测验证（拿真实 URI 跑判定逻辑）
+
+| uid | 请求 | 结果 |
+|---|---|---|
+| 1000 | `view?path=` / `api/localFile` / `api/file?filePath=/opt/…` | 放行（可读） |
+| **1003** | `view?path=` | **拦截** |
+| **1003** | `api/localFile` | **拦截** |
+| **1003** | `api/file?filePath=/opt/…` | **拦截**（0.5.15 是放行） |
+| 1000 / 1003 | `css` / `js` 等静态资源 | 放行 |
+
+### 残留边界
+
+`/opt/…` 这类请求若**完全没有来源页**（手工构造的请求），仍然只能放行（无法判定 → fail-open）。
+要彻底堵死需要闸门记录「哪个 uid 触发过哪个转换」，属于后续可选项。
+
+---
+
+## 0.5.15
+
+### 解决「凡能登录飞牛的用户都能预览全部已挂载卷」
+
+这是本项目一直挂在 README 里的那条限制，本版真正修掉了。
+
+### 为什么之前的开放 API 路线走不通
+
+0.5.9 的预检已经实测证明：应用脚本里拿不到 `TRIM_API_TOKEN`，
+`/var/run/trim_open_gateway_apiscope.socket` 又是 `root:root 0660` —— 官方那套
+`trim.file.checkUserACL` 用不了。生态调研也印证了这点：`grep checkUserACL` 在整个
+`@appcenter` 里零使用，`music-tidy` 的作者甚至把话说在注释里
+「X-Trim-Userid（可信身份，仅用于日志与展示，**不做权限依据**）」。
+
+### 转折：身份拿得到，权限也能在 VFS 层问出来
+
+两件事凑齐了：
+
+1. **身份**：飞牛统一网关会把当前登录用户放进请求头。实测（浏览器打开
+   `/app/basemetas-fileview/__whoami`）返回 `uid=1000 | user=<用户名> | isadmin=true`。
+2. **权限**：飞牛自 v1.2.0 起存储空间使用 Windows ACL，而它在 VFS 层生效。实测：
+
+   ```
+   -rwx------+ 1 yang Users … .pptx
+   uid=1000 可读（属主） / uid=1001 不可读 / uid=1003 不可读
+   ```
+
+   于是「以某个用户的身份问一句这个文件能不能读」就能得到正确答案。
+
+### 实现
+
+```
+浏览器 → 统一网关（注入 X-Trim-Userid）→ app.sock → nginx 网关容器
+    location /app/basemetas-fileview/  →  auth_request /__acl
+         /__acl → 闸门容器（python:3-alpine，root）
+                    fork → setgroups(按 /etc/group 算) → setgid → setuid(uid)
+                    → os.access(path, R_OK) → 200 / 403
+    → FileView 引擎容器
+```
+
+- 新增 **`app/docker/fv-acl-gate.py`**：Python 3 标准库，无第三方依赖。
+  - ⚠️ 为什么不是简单的 `docker exec -u <uid> … test -r`：`docker exec -u`
+    **不会设置用户的附加组**。飞牛的「共享给设备内的用户」按用户授权（uid 能覆盖），
+    但**团队文件按用户组授权** —— 那样会误判成不可读，而**误拦是危险方向**。
+    所以它 fork 子进程后按 `/etc/group` 设好 setgroups → setgid → setuid 再判定，
+    完整还原该用户的权限上下文。因此需要 root 运行。
+  - 路径来源做了三重冗余：nginx 的 `$arg_path` / `$arg_filePath`、请求自身的 query、
+    以及**来源页 URL 里的 path**（`POST /preview/api/localFile` 只在请求体里带路径，
+    nginx 看不到 body，只能从来源页推断 —— 正常流程一定从预览页发起）。
+- **compose 新增 `acl` 服务**：只读挂载与引擎**完全相同**的存储卷（判定必须在同一份
+  文件系统视图上做）+ 宿主机 `/etc/passwd`、`/etc/group`。挂载段由安装向导自动重建
+  （第二组标记 `## VOLUMES_ACL_BEGIN/END`）。
+- **nginx 增加 `auth_request`** 与内部 `/__acl` 入口。
+
+### 两个刻意的安全设计
+
+1. **默认 `mode=log`：只记录判定结果，不拦截。**
+   在「设置 → 逐用户权限校验」里改成 `enforce` 才真正拦截。闸门每次请求现读配置，
+   改完立即生效，不用重启容器。建议先跑一段时间确认没有误拦。
+2. **闸门不可用时自动 fail-open，绝不会把应用拖死。**
+   `upstream aclgate` 里挂了一个永远连不上的备用 + 本机回环上的「永远 200」服务，
+   闸门连不上时 nginx 自动 failover 过去 → 放行。最坏情况只是「没保护」，
+   不会出现「应用打不开」。
+   另外闸门只在**确定不可读**时拒绝：缺 uid、解析不到路径、查不到用户、判定异常
+   → 一律放行并记日志。
+
+### 诊断
+
+```bash
+# 1) 确认网关有没有把身份传进来（浏览器打开，需要登录态）
+https://<你的域名>/app/basemetas-fileview/__whoami
+
+# 2) 看闸门的判定过程
+docker logs basemetas-fileview-acl
+
+# 3) 单独验证某个用户对某个文件的权限（在闸门容器里跑）
+docker exec basemetas-fileview-acl python3 /acl/fv-acl-gate.py --test 1001 /vol1/1000/某文件.ofx
+```
+
+---
+
+## 0.5.14
+
+本版**不改变访问行为**，只是把「按用户区分权限」的前置条件做成可直接验证的工具。
+
+### 路线调整：放弃开放 API，改用 VFS 层的 ACL 判定
+
+0.5.9 的预检已经证明开放 API 这条路走不通：
+
+```
+① TRIM_API_TOKEN：**没有** —— 脚本环境里拿不到 token
+② API socket：srwxrw----+ 1 root root … /var/run/trim_open_gateway_apiscope.socket
+```
+
+而拆开社区项目 `qq1907/Fnos-onlyofficeEdit`（OnlyOffice 编辑器 fpk）后得到了新的突破口：
+
+```bash
+# 它的 ui/index.cgi（bash 反向代理）里
+CURRENT_UID="$HTTP_X_TRIM_USERID"
+CURRENT_USER="$HTTP_X_TRIM_USERNAME"
+```
+
+**当前登录用户身份是拿得到的** —— 网关设的 `X-Trim-Userid` 会传给应用。加上飞牛官方
+[文件权限文档](https://help.fnnas.com/articles/v1/file/acl) 说的「自 v1.2.0 起存储空间使用
+Windows ACL」「应用是一等 ACL 对象」，就有了下面这条**不依赖开放 API** 的路：
+
+```
+每个请求：uid = X-Trim-Userid，path = 请求参数
+          docker exec -u "$uid" basemetas-fileview-engine test -r "$path"
+          → 由 VFS 按 Windows ACL 判定该用户能否读该文件
+```
+
+不需要 token、不需要那个 socket、不需要 root、不需要新镜像 —— docker 权限我们已经有。
+
+### 新增（验证工具）
+
+- **诊断端点 `/app/basemetas-fileview/__whoami`**：回显网关转发过来的身份头。
+
+  ```bash
+  curl -i "https://<你的域名>/app/basemetas-fileview/__whoami"
+  ```
+
+  只回显请求头本身，不含任何文件内容；本容器只监听 `app.sock`、不对外暴露端口，
+  所以必须先通过统一网关的登录态校验才能到达。
+
+- **网关 `access_log` 增加 `uid` / `isadmin` 两列**，日常请求也能看出身份有没有传进来。
+
+### 下一步
+
+两件事确认后即可实现闸门（nginx `auth_request` + 宿主机小鉴权服务，Python 3 写，
+已确认 `/usr/bin/python3` 存在）：
+
+1. `docker exec -u <非属主 uid> … test -r <某私有文件>` 是否返回**不可读**；
+2. `__whoami` 是否能看到真实的 uid。
+
+---
+
 ## 0.5.13
 
 ### 撤回「兜底停容器」—— 它让情况更糟
@@ -257,7 +481,7 @@ invalid spec: :/app/target:rw: empty section between colons
 ```
 POST /app/basemetas-fileview/preview/api/localFile  →  404
 ERROR GlobalExceptionHandler - 业务异常 - 错误码: 30000,
-  消息: 文件不存在: 文件不存在: /vol3/1000/某目录/某文件.ofd, 路径: /preview/api/localFile
+  消息: 文件不存在: 文件不存在: /vol1/1000/某目录/某文件.ofd, 路径: /preview/api/localFile
 ```
 
 同一时刻 `/vol1` 的 OFD 走完了 `localFile(200) → 状态轮询 → OFD 转 PDF → 取文件(200)`。

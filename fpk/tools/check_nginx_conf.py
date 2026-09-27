@@ -37,6 +37,8 @@ KNOWN_PREFIXES = (
     "gzip_types", "charset", "include", "worker_processes", "events", "http",
     "server", "upstream", "types", "etag", "expires", "limit_except",
     "auth_basic", "ssl_certificate", "umask", "pid", "user", "error_page",
+    # 逐用户权限闸门用到（见 app/docker/fv-acl-gate.py）
+    "auth_request", "internal", "proxy_pass_request_body", "proxy_method",
 )
 
 

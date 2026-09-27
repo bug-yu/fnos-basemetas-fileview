@@ -27,5 +27,14 @@
         "helpText": "若你新增了硬盘（例如 /vol4），把这里改回 auto 再保存一次，即可自动纳入。"
       }
     ]
+  },
+  {
+    "stepTitle": "逐用户权限校验",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "已默认开启，无需设置。\n\n飞牛统一网关会把当前登录用户放进请求头，本应用据此以该用户的身份检查目标文件能否读取：只有对该文件有读权限的人才能预览。团队文件、共享文件按飞牛里设的权限正常放行，没有权限的文件会返回 403。\n\n判定过程可以看： docker logs basemetas-fileview-acl\n\n万一出现误拦（某个本该能看的人被挡了），把 /vol{n}/@appdata/basemetas-fileview/acl.conf 里的 mode=enforce 改成 mode=log 即可退回「只记录不拦截」，改完立即生效、不用重启容器，也不用重装应用。"
+      }
+    ]
   }
 ]
