@@ -12,9 +12,22 @@
 #     ② 宿主机 /var/run/trim_open_gateway_apiscope.socket 存在且当前用户可访问
 #     ③ 管理员已通过「授权目录」把目标目录授给应用（否则 checkUserACL 一律返回 false）
 #   本脚本把这三条一次性探明，连原始响应一起写进日志，省得反复猜。
+#
+# 环境要求：开放 API 需要系统 ≥ 1.2.0401、App ≥ 1.34.0。本脚本会自行比对并给出结论。
 
 FV_ACL_SOCKET="${FV_ACL_SOCKET:-/var/run/trim_open_gateway_apiscope.socket}"
 FV_ACL_APPNAME="${FV_ACL_APPNAME:-basemetas-fileview}"
+FV_ACL_MIN_SYSVER="1.2.0401"
+
+# 版本号比较：fv_ver_ge 1.2.0701 1.2.0401 → 返回 0（前者不小于后者）
+fv_ver_ge() {
+  awk -v a="$1" -v b="$2" 'BEGIN{
+    n=split(a,A,"."); m=split(b,B,".");
+    k=(n>m?n:m);
+    for(i=1;i<=k;i++){ x=A[i]+0; y=B[i]+0; if(x>y) exit 0; if(x<y) exit 1 }
+    exit 0
+  }'
+}
 
 # 调一次后端 API，把原始响应打到 stdout；失败时把原因打到 stdout 并返回 1
 fv_api_call() {
@@ -38,7 +51,14 @@ fv_acl_probe() {
   fv_log "──────── 飞牛开放 API 预检（只读）────────"
   fv_log "运行用户：$(id -un 2>/dev/null) (uid=$(id -u 2>/dev/null))"
   fv_log "系统版本：${TRIM_SYS_VERSION:-（未注入 TRIM_SYS_VERSION）}"
-  fv_log "          开放 API 要求系统 ≥ 1.2.0401、App ≥ 1.34.0"
+  if [ -n "${TRIM_SYS_VERSION:-}" ]; then
+    if fv_ver_ge "$TRIM_SYS_VERSION" "$FV_ACL_MIN_SYSVER"; then
+      fv_log "          ✅ 满足开放 API 要求（≥ ${FV_ACL_MIN_SYSVER}）"
+    else
+      fv_log "          ❌ 低于开放 API 要求（≥ ${FV_ACL_MIN_SYSVER}）—— 逐用户权限校验不可用"
+    fi
+  fi
+  fv_log "          开放 API 要求：系统 ≥ ${FV_ACL_MIN_SYSVER}、App ≥ 1.34.0"
 
   # ① token
   if [ -n "${TRIM_API_TOKEN:-}" ]; then

@@ -25,6 +25,17 @@
 设计方向（按你的选择）：**管理员授权固定目录，不要求用户逐个授权**；每次请求在网关层
 用 `X-Trim-Userid` + 请求里的 `path` 调 `checkUserACL`，`readable: false` 就 403。
 
+### 环境要求
+
+| 项 | 要求 | 说明 |
+|---|---|---|
+| 飞牛 fnOS | **≥ 1.2.0401** | 开放 API 的硬门槛。低于此版本，开放 API 不可用 |
+| 飞牛 App | **≥ 1.34.0** | 同上（用飞牛 App 打开预览时） |
+| `manifest.os_min_version` | 仍为 `1.2.0` | **暂不上抬**：本版只是预检，不依赖开放 API；等权限闸门真正上线、成为必需功能时再抬，避免白白挡住老版本用户 |
+
+预检会读取系统注入的 `TRIM_SYS_VERSION` 自行比对，并在日志里直接写「✅ 满足 / ❌ 低于」，
+不用手工核对版本号。
+
 ### 新增
 
 - `config/resource` 声明 `api-scope`：`trim.file.sharedAccess`、`trim.file.userAcl`。
