@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.8
+version=0.5.9
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.8：① 修复「某个存储卷（如 /vol3）里的文件预览报文件不存在」—— 根因是应用用户 basemetas-fileview 没有 docker 权限，所有 docker 操作（重建容器/查状态/停容器）静默失败，导致「保存设置即自动重建容器」从未生效、容器从安装起就没被重建过，compose 里后加的 /vol3 永远进不了容器；现已在 config/privilege 声明 join-groups:["docker"]，并在无权限时写日志与界面提示而不是静默跳过。② 重建容器改用 config/resource 声明的 compose 项目名，并在项目名不一致（脱管）时先删旧容器再按声明名重建。③ cmd/main stop 显式兜底停容器，避免停不掉导致无法卸载/重装。④ 存储卷探测改为「/proc/mounts 挂载点 ∪ /volN 目录」取并集。⑤ 新增「容器挂载核对」：启动/安装时进引擎容器实测每个卷，区分「目录不存在」和「目录是空的」，不对就强制重建。⑥ 探测与核对过程全部写进 @appdata/fv-volumes.log。⑦ tools/fv-repair.sh 会校验 compose、修正脱管、支持 VOLS 手工指定卷；tools/fv-doctor.sh 增加 compose 校验、项目名比对与飞牛应用中心错误日志。0.5.7：修复卸载失败（手动 docker compose up -d 未指定 -p 时容器脱离飞牛管理，应用中心按原项目名 down 找不到工程而报 Request failed）。0.5.6：① 修复网关容器 Restarting 崩溃循环；② 存储卷默认 auto；③ 自动生成 docker/.env。
+changelog=0.5.9：为「按用户区分预览权限」铺路，本版不改变访问行为。① config/resource 声明 api-scope（trim.file.sharedAccess / trim.file.userAcl）。② 新增启动时的一次性开放 API 预检（app/docker/fv-acl-probe.sh，只读）：把 TRIM_API_TOKEN 是否存在、/var/run/trim_open_gateway_apiscope.socket 是否可用、管理员已授权哪些目录、trim.file.checkUserACL 是否返回真实权限结果，全部写进 @appdata/fv-volumes.log —— 这三条前提决定了逐用户权限闸门能否落地，也决定了它必须放在哪一层。③ 预检全程不阻塞启动，任何失败只写日志。0.5.8：修复应用用户缺少 docker 权限导致容器从不重建、新加存储卷永远预览不了；容器挂载核对；探测取并集。0.5.7：修复卸载失败。0.5.6：修复网关容器重启循环；存储卷默认 auto。
 
 ctl_stop=true
 checkport=false

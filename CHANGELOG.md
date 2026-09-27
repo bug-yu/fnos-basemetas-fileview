@@ -6,6 +6,49 @@
 
 ---
 
+## 0.5.9
+
+本版**不改变任何访问行为**，只是为「按用户区分预览权限」把路铺好、把前提探明。
+
+### 背景
+
+现在的实现是「容器以 root 身份挂载全部存储卷」——这绕过了飞牛的用户 ACL，
+所以**凡能登录飞牛的用户，打开 `/app/basemetas-fileview/...` 都能预览已挂载卷里的文件**。
+要修掉它，需要飞牛的开放 API（[调用方式](https://developer.fnnas.com/api/calling/)）：
+
+| 能力 | 接口 |
+|---|---|
+| 网关转发当前用户 | `X-Trim-Userid` / `X-Trim-Isadmin` / `X-Trim-Username` |
+| 管理员授权固定目录 | 前端 `pickSharedFile` / `authorizeSharedFile`；后端 `trim.file.getSharedAccessibleFolders` |
+| 按用户校验路径权限 | 后端 `trim.file.checkUserACL` `{uid, path}` → `{readable, writable, deletable}` |
+
+设计方向（按你的选择）：**管理员授权固定目录，不要求用户逐个授权**；每次请求在网关层
+用 `X-Trim-Userid` + 请求里的 `path` 调 `checkUserACL`，`readable: false` 就 403。
+
+### 新增
+
+- `config/resource` 声明 `api-scope`：`trim.file.sharedAccess`、`trim.file.userAcl`。
+- **启动时一次性开放 API 预检** `app/docker/fv-acl-probe.sh`（只读，不阻塞启动）。
+  它把下面三件事连同**原始响应**写进 `@appdata/basemetas-fileview/fv-volumes.log`：
+
+  1. `TRIM_API_TOKEN` 有没有注入到应用脚本环境（官方要求不得持久化，所以只能这么探）；
+  2. `/var/run/trim_open_gateway_apiscope.socket` 在不在、当前用户能不能访问；
+  3. 管理员已授权哪些目录，以及 `checkUserACL` 返回的是**真实权限**还是清一色 `false`。
+
+  第 3 条尤其关键：官方文档写明「应用无权读取路径状态时，`readable/writable/deletable` 均为 `false`」，
+  而我们并没有走授权流程（是靠 root 挂载绕过的），所以**必须先确认它返回的是真结果**，
+  否则闸门一上线会把所有人挡住。
+
+- 预检会同时打印 `TRIM_SYS_VERSION`（开放 API 要求系统 ≥ `1.2.0401`）。
+
+### 下一步
+
+预检结论出来后，再决定闸门落在哪一层（nginx `auth_request` + 一个小鉴权服务 / 换用支持脚本的网关镜像）。
+`auth_request` 只认 HTTP 状态码，而飞牛接口是 `200` + body 里的 `code`/`data`，
+所以**纯 nginx 配置做不到**，必须有能解析 JSON 的一层——这也是为什么先探明再动手。
+
+---
+
 ## 0.5.8
 
 本次修的是「某个存储卷（如 `/vol3`）里的文件预览报文件不存在」，而且**全新安装也一样**：

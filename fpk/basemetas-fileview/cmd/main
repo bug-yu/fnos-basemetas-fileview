@@ -61,6 +61,15 @@ case "$1" in
       fv_sync_volumes "" ensure >/dev/null
     fi
 
+    # 飞牛开放 API 预检（只读，不改任何东西）：
+    #   用来确认「按用户校验文件权限」这条路能不能走通 —— 需要 token、API socket、已授权目录三件事。
+    #   结果写进 ${TRIM_PKGVAR}/fv-volumes.log。详见 app/docker/fv-acl-probe.sh 头部注释。
+    #   全程不阻塞启动：任何失败都只是写日志。
+    if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
+      . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
+      fv_acl_probe
+    fi
+
     # 保证自定义字体目录存在（compose 把 ${TRIM_PKGVAR}/fonts 挂到容器 /usr/local/share/fonts）
     if [ -n "${TRIM_PKGVAR:-}" ]; then
       mkdir -p "$TRIM_PKGVAR/fonts" 2>/dev/null
