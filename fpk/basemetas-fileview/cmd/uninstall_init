@@ -1,11 +1,9 @@
 #!/bin/bash
 # uninstall_init：框架执行 docker compose down 之前先做容错清理。
 #
-# 背景（2026-09-27 踩坑）：用户手动 `docker compose up -d` 时若未指定
-# `-p basemetas-fileview`，生成的容器 label 里 project 名会脱离飞牛管理。
-# 应用中心再按自己的 project 名 `docker compose down` 时找不到工程，
-# 于是界面报 "Request failed"，卸载失败；但 `docker ps` 看容器其实已经干净。
-# 这里先按容器名强删一次，再按项目名 down 一次，把状态对齐。
+# 手工 `docker compose up -d` 若未指定 `-p basemetas-fileview`，容器 label 里的 project 名
+# 会脱离飞牛管理，应用中心再按自己的 project 名 down 时找不到工程，界面报 Request failed。
+# 这里先按容器名强删、再按项目名 down 一次，把状态对齐。
 
 set +e
 
@@ -13,9 +11,9 @@ PROJ="basemetas-fileview"
 COMPOSE_DIR="${TRIM_APPDEST}/docker"
 COMPOSE_FILE="${COMPOSE_DIR}/docker-compose.yaml"
 
-# 先清 compose 重建被中断时残留的临时容器（形如 <12位哈希>_basemetas-fileview-xxx）。
-# 它和正式容器同名同项目，会让 down / stop 报 "No such container" —— 而且是**持续失败**，不是偶发。
-# 只按正式容器名强删（下面那行）是删不到它的，所以这里按名字模式清。
+# 先清 compose 重建被中断时残留的临时容器（形如 <12位哈希>_basemetas-fileview-xxx）：
+# 它与正式容器同名同项目，会让 down / stop 持续报 "No such container"，
+# 而只按正式容器名强删（下面那行）是删不到它的。
 if command -v docker >/dev/null 2>&1; then
   docker ps -a --filter name=basemetas-fileview --format '{{.Names}}' 2>/dev/null \
     | grep -E '^[0-9a-f]{12}_basemetas-fileview-' \

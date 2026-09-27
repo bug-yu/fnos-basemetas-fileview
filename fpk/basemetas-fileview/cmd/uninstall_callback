@@ -11,7 +11,7 @@ COMPOSE_FILE="${TRIM_APPDEST}/docker/docker-compose.yaml"
 
 if command -v docker >/dev/null 2>&1; then
   # 清 compose 重建被中断时残留的临时容器（形如 <12位哈希>_basemetas-fileview-xxx），
-  # 它和正式容器同名同项目，会让后续 down / stop 持续报 "No such container"。
+  # 它与正式容器同名同项目，会让后续 down / stop 持续报 "No such container"。
   docker ps -a --filter name=basemetas-fileview --format '{{.Names}}' 2>/dev/null \
     | grep -E '^[0-9a-f]{12}_basemetas-fileview-' \
     | while read -r n; do

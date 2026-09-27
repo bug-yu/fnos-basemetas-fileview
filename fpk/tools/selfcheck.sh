@@ -4,6 +4,14 @@ set -u
 BASE="$(cd "$(dirname "$0")/.." && pwd)/basemetas-fileview"
 FAILED=0
 
+echo "== 行尾检查（CRLF 会让脚本在 Linux 上静默失效）=="
+if bash "$(dirname "$0")/check_eol.sh" "$BASE"; then
+  :
+else
+  FAILED=1
+fi
+
+echo
 echo "== bash -n 语法检查 =="
 for f in "$BASE"/cmd/* "$BASE"/app/docker/fv-volumes.sh; do
   [ -f "$f" ] || continue

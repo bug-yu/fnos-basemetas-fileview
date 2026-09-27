@@ -16,7 +16,7 @@
 | `basemetas-fileview.fpk` | 安装包 —— **构建产物，不在仓库里**（`.gitignore` 排除）。用 `fpk/build.sh` 或 `build.bat` 现场生成，或从 [Releases](../../releases) 下载 |
 | `fpk/basemetas-fileview/` | 安装包工程源码（改配置改这里） |
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
-| `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`selfcheck.sh`） |
+| `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
@@ -379,6 +379,12 @@ build.bat
 
 产物落在 `fpk` 上层目录：`basemetas-fileview.fpk`。打包工具是飞牛官方 `fnpack` 1.2.3。**打包后不要对 `.fpk` 做任何后处理**（包内 manifest 含 `app.tgz` 的 MD5 校验，飞牛安装时做完整性校验）。
 
+两个脚本都会先跑一遍**行尾检查**（`fpk/tools/check_eol.sh`），`basemetas-fileview/` 下只要出现 CRLF 就中止打包：
+
+> ⚠️ 为什么必须有这道检查：Windows 上 `core.autocrlf=true` 时，Git 提交会把 CRLF 归一成 LF **存进仓库**，但**工作区里的文件仍然是 CRLF** —— 而 `fnpack` 打的正是工作区。于是 `git status` 一片干净，`.fpk` 里却混进了 CRLF 的 shell 脚本：轻则 shebang 变成 `#!/bin/bash\r` 直接起不来，重则变量值末尾多一个 `\r`，让 `docker rm -f "$PROJ-engine"` 之类**静默失败**（0.5.21 修的正是这个）。
+>
+> 单独跑：`bash fpk/tools/check_eol.sh`
+
 ## 更新
 
 **就地升级**：改完配置或代码后，把 `manifest` 的 `version` 末位 +1、重新打包，然后在应用中心「手动安装」新版 `.fpk` 即可 —— **不需要先卸载**（飞牛靠版本号递增判断升级安装，走包里的 `cmd/upgrade_init` / `cmd/upgrade_callback`）。
@@ -399,7 +405,7 @@ build.bat
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.20`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.21`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -414,6 +420,7 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.21** | 修 `cmd/uninstall_*` 的 CRLF 行尾（此前以 CRLF 打进包，卸载清理动作静默失效）；新增打包前行尾强制检查 |
 | **0.5.20** | 放开单文件预览大小上限，默认 **1 GB**（引擎自带 100 MB 闸门，超过就提示「文件转换失败 413」），可在设置里调整 |
 | **0.5.19** | 去掉应用设置里没意义的「访问权限」标签页 |
 | **0.5.17** | **按用户区分预览权限**（默认开启）：只有对该文件有读权限的人才能预览，没有权限返回 403。另修：新加的存储卷永远预览不了、点「停用」报 Request failed、升级覆盖挂载段 |

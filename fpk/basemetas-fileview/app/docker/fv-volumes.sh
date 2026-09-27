@@ -1,25 +1,19 @@
 #!/bin/bash
-# FileView 预览 —— 存储卷挂载 / 容器重建的公共逻辑
-#
+# FileView 预览 —— 存储卷挂载 / 单文件大小上限 / 容器重建的公共逻辑。
 # 由 cmd/install_callback、cmd/config_callback、cmd/upgrade_callback、cmd/main 共同 source。
-# 这里的每一条判断背后都是实际踩过的坑，注释里写清楚了原因，改动前请先读。
 #
-# ⚠️ 为什么这个文件会放在 docker/ 目录下（而不是更合理的 lib/）：
-#    fnpack 打包 app.tgz 时只收 docker/、ui/、config/ 三个目录，放在 lib/ 会被整目录丢掉，
-#    装好以后脚本 source 不到、静默 exit 0，现象是「改设置没反应」，极难排查。
-#    副作用：本目录会被挂进 nginx 的 conf.d，但 nginx 只 include *.conf，.sh 不会被加载。
+# ⚠️ 本文件必须放在 docker/ 目录下：fnpack 打包 app.tgz 时只收 docker/、ui/、config/，
+#    放到别处（如 lib/）会被整目录丢掉，装好后脚本 source 不到、静默 exit 0。
+#    副作用：本目录会挂进 nginx 的 conf.d，但 nginx 只 include *.conf，.sh 不会被加载。
 #
-# ⚠️ 一个必须记住的前提（0.5.7 的教训）：
-#    ${TRIM_APPDEST}/docker/docker-compose.yaml 是「安装包里的模板文件」，
-#    升级时框架会把新的 app.tgz 重新释放到 ${TRIM_APPDEST}，**这个文件会被覆盖回模板内容**
-#    （挂载段是写死的 /vol1、/vol2）。所以任何「释放文件」之后都必须重新写一遍挂载段，
-#    否则之前配置好的 /vol3 就凭空消失了 —— 现象就是「升级完 vol3 又预览不了」。
+# ⚠️ 前提：${TRIM_APPDEST}/docker/docker-compose.yaml 是安装包里的模板文件，
+#    升级时框架重新释放 app.tgz 会把它覆盖回模板内容。所以任何「释放文件」之后的
+#    时机都必须重新写一遍挂载段，否则之前的配置会凭空消失。
 
-# 全部用 ${VAR:-} 取值：这个库会被多个回调 source，缺变量时应当是「什么都不做」，
-# 而不是让脚本直接崩在 source 那一行（排查起来完全没有线索）。
+# 全部用 ${VAR:-} 取值：本库会被多个回调 source，缺变量时应当什么都不做，而不是崩掉。
 FV_COMPOSE="${TRIM_APPDEST:-}/docker/docker-compose.yaml"
 
-# 排查日志：落在应用数据目录，用于把「改了设置没反应」这类静默失败变成可查的证据。
+# 排查日志，落在应用数据目录
 FV_LOG=""
 [ -n "${TRIM_PKGVAR:-}" ] && FV_LOG="${TRIM_PKGVAR}/fv-volumes.log"
 
@@ -30,33 +24,21 @@ fv_log() {
 }
 
 # ---------------------------------------------------------------------------
-# 0a. 当前用户能不能操作 Docker —— 这是本包最容易踩、也最难查的坑
+# 0a. Docker 可用性
 # ---------------------------------------------------------------------------
-# 生命周期脚本是以**应用用户**（config/privilege 里的 basemetas-fileview）身份运行的，
-# 而它默认**不在 docker 组里**；/var/run/docker.sock 是 root:docker 0660，
-# 于是所有 docker 操作（重建容器 / 查状态 / 停容器）会**全部静默失败**。
-#
-# 实测症状（就是这一条导致的）：
-#   · 改了存储卷设置保存后，容器根本没重建 → 新加的卷永远挂不上
-#   · cmd/main status 的 docker inspect 一直失败 → 飞牛看到的运行状态是错的
-#   · 点「停用」报 Request failed, please try again later
-#   验证：runuser -u basemetas-fileview -- docker ps   →  Permission denied
-#
-# 修法：config/privilege 里声明 join-groups: ["docker"]（0.5.8 起已加）。
-# 注意：这等于把 docker socket 交给应用用户，属于较大的权限授予；
-#       本应用本来就要以 root 身份在容器里跑预览引擎、只读挂载全部存储卷，
-#       权限模型上没有变得更弱，但换机器部署时请知悉这一点。
+# 生命周期脚本以应用用户身份运行，该用户必须在 docker 组里，否则所有 docker 操作
+# 静默失败（config/privilege 已声明 join-groups: ["docker"]）。
 fv_docker_ok() {
   command -v docker >/dev/null 2>&1 || return 1
   docker ps >/dev/null 2>&1
 }
 
-# docker 用不了时，写一条「照着做就能好」的提示，而不是静默跳过
+# docker 用不了时写一条照着做就好的提示。
+# 只在日志里第一次出现时写，避免每次启动都刷一遍。
 fv_docker_denied_note() {
   local who
   who="$(id -un 2>/dev/null)"
   fv_log "错误：当前用户 ${who} 无法访问 Docker（/var/run/docker.sock 需要 docker 组权限）"
-  # 只在日志里第一次出现时写用户可见提示，避免每次启动都弹一遍
   if [ -n "${TRIM_TEMP_LOGFILE:-}" ] && [ -n "$FV_LOG" ] \
      && [ "$(grep -c '无法访问 Docker' "$FV_LOG" 2>/dev/null)" = "1" ]; then
     {
@@ -73,9 +55,8 @@ fv_docker_denied_note() {
 # ---------------------------------------------------------------------------
 # 0. 设置持久化
 # ---------------------------------------------------------------------------
-# 为什么要落盘：
-#   向导变量只在「安装 / 保存设置」那一次回调里存在；而升级回调、应用启动（cmd/main start）
-#   都拿不到 wizard_volumes。不记住用户填的值，这些时机就只能瞎猜（猜错就是又回到 /vol1,/vol2）。
+# 向导变量只在「安装 / 保存设置」那一次回调里存在；升级回调和 cmd/main start
+# 都拿不到 wizard_volumes，必须落盘记住用户填的值。
 FV_STATE="${TRIM_PKGVAR:-}/volumes.conf"
 
 fv_save_state() {
@@ -94,28 +75,21 @@ fv_load_state() {
 # ---------------------------------------------------------------------------
 # 1. 探测宿主机上真实存在的存储卷
 # ---------------------------------------------------------------------------
-# 为什么需要自动探测：
-#   早期版本把默认写死成 /vol1,/vol2。用户机器上实际有 /vol1 /vol2 /vol3 三块盘，
-#   安装向导默认只有前两个 → /vol3 里的文件一律「文件不存在」。
-#   更糟的是卸载重装时向导又回到默认值，问题必然复现。
-#   所以默认改成 auto：直接以宿主机真实挂载情况为准。
-#
-# 为什么是「并集」而不是「挂载点优先、探不到再退化成目录扫描」：
-#   旧写法只要 /proc/mounts 里探到任意一个 /volN 就完全不走目录兜底。
-#   于是「/vol1、/vol2 是独立挂载点，/vol3 却是 bind mount 或普通目录」这种混合环境下，
-#   /vol3 会被静默漏掉 —— 又回到「vol3 预览不了」。两类来源取并集才是稳的。
+# 默认 auto：以宿主机真实挂载情况为准，不写死 /vol1,/vol2（写死会让新加的盘永远预览不了，
+# 卸载重装还会再次踩到）。
+# 取「挂载点 ∪ 目录」的并集：存储卷不一定都是独立挂载点，只看 /proc/mounts
+# 会静默漏掉那些只是普通目录或 bind mount 的卷。
 
 fv_mounts_volumes() {
   [ -r /proc/mounts ] || return 0
-  # 允许挂载点末尾带 "/"（手工 mount 时可能出现），统一去掉再输出
+  # 挂载点末尾可能带 "/"，统一去掉再输出
   awk '$2 ~ /^\/vol[0-9]+\/*$/ {p=$2; sub(/\/+$/, "", p); print p}' /proc/mounts 2>/dev/null
 }
 
 fv_dir_volumes() {
   local d
-  # ⚠️ 只认「没有前导零」的卷号：飞牛的存储卷是 /vol1、/vol2、/vol3…
-  #    实测真机上存在 /vol00 这种目录（不是存储卷），旧写法 /vol[0-9][0-9] 会把它一起收进来。
-  #    用户显式填写的列表不走这里（见 fv_normalize），所以不受影响。
+  # 只认「没有前导零」的卷号：飞牛的存储卷是 /vol1、/vol2…，/vol00 这类目录不是。
+  # 用户显式填写的列表不走这里（见 fv_normalize）。
   for d in /vol[1-9] /vol[1-9][0-9] /vol[1-9][0-9][0-9]; do
     [ -d "$d" ] || continue
     printf '%s\n' "$d"
@@ -131,7 +105,7 @@ fv_detect_volumes() {
     | sed 's/,$//'
 }
 
-# 把用户手填的字符串规范成 /volN,的形式，顺手剔掉不合法的项
+# 把用户手填的字符串规范成 /volN, 的形式，顺手剔掉不合法的项
 fv_normalize() {
   local raw="$1" out="" v
   local OLD_IFS="$IFS"
@@ -162,7 +136,7 @@ fv_resolve_volumes() {
 # ---------------------------------------------------------------------------
 # ⚠️ 只重写 ## VOLUMES_BEGIN / ## VOLUMES_END 之间的内容，标记行本身绝不能删，
 #    否则下一次回调就找不到锚点了。
-# 内容没变就不落盘：避免每次启动都换一次 inode，也让「谁改的」在文件时间戳上看得清。
+# 内容没变就不落盘，保持幂等。
 fv_write_volumes() {
   local list="$1" block="" v tmp
   [ -n "$list" ] || return 1
@@ -178,7 +152,7 @@ fv_write_volumes() {
 
   tmp="${FV_COMPOSE}.new"
   # 同时重写两处：引擎的挂载段，以及权限闸门容器的挂载段
-  # （闸门必须在与引擎相同的文件系统视图上做判定，所以两份卷清单必须一致）
+  # （闸门必须在与引擎相同的文件系统视图上做判定，两份卷清单必须一致）
   if awk -v block="$block" '
     /## VOLUMES_BEGIN/     { print; printf "%s", block; skip=1; next }
     /## VOLUMES_END/       { skip=0 }
@@ -200,46 +174,33 @@ fv_write_volumes() {
 # ---------------------------------------------------------------------------
 # 2b. 单文件预览大小上限（FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB）
 # ---------------------------------------------------------------------------
-# 为什么需要这个开关（2026-09-27 实测定位，源码级结论）：
-#   FileView 预览服务里有个硬门槛 max-file-size-mb，**默认 100（MB）**。
-#   超过它的文件在**转换之前**就被直接拒绝：
-#       fileview-preview …/service/FilePreviewService.java
-#         long fileSize = file.length();
-#         long maxSize  = storageConfig.getMaxFileSizeBytes();
-#         if (fileSize > maxSize) throw FileViewException.of(ErrorCode.FILE_TOO_LARGE,
-#             String.format("文件大小 %.2f MB 超过限制 %.2f MB", …));
-#       …/common/exception/ErrorCode.java
-#         FILE_TOO_LARGE(30006, "文件过大", 413)
-#   于是 121MB 的 PDF 会拿到 HTTP 413，前端把它显示成「文件转换失败 413」——
-#   看起来像转换器故障，其实和转换器、nginx、网络都无关。
+# 引擎预览服务有个硬门槛 fileview.preview.storage.max-file-size-mb，默认 100（MB）。
+# 超过它的文件在**转换之前**就被直接拒绝，接口返回 HTTP 413，前端把状态码显示成
+# 「文件转换失败 413」—— 看起来像转换器故障，其实和转换器、nginx、网络都无关。
 #
-# 为什么用环境变量而不是挂配置文件：
-#   StorageConfig 是 @ConfigurationProperties(prefix = "fileview.preview.storage")，
-#   Spring Boot 中环境变量的优先级高于包内 application.yml；而且不用猜镜像里
-#   application.yml 的确切路径（挂错路径会被 docker 建成空目录，容器直接起不来，
-#   见 compose 里那段关于「文件级挂载」的注释）。
+# 用环境变量覆盖：StorageConfig 是 @ConfigurationProperties(prefix="fileview.preview.storage")，
+# Spring Boot 里环境变量的优先级高于包内 application.yml，也不用去猜镜像里配置文件的位置
+# （挂错路径会被 docker 建成空目录，容器直接起不来）。
+# 变量名按 Spring Boot 规则换算：点→下划线、去掉连字符、转大写。
 #
-# ⚠️ 值必须严格校验：绑定的目标字段是 int。
-#    写进非数字或空值会让 Spring 启动时绑定失败 → **引擎容器起不来**，
-#    比不设这个开关严重得多。所以只接受纯数字，其余一律回退默认值。
+# ⚠️ 目标字段是 int：写进非数字或空值会让 Spring 绑定失败、**引擎容器起不来**，
+#    比不设这个开关严重得多。所以只接受纯数字，其余一律回退。
 FV_MAXSIZE_DEFAULT=1024
 FV_MAXSIZE_MAX=102400          # 100 GB，防手滑的上限，不是技术上限
 FV_MAXSIZE_STATE="${TRIM_PKGVAR:-}/maxfilesize.conf"
 
-# 把任意输入规范成纯数字 MB；不合法返回空串（调用方回退默认值）
+# 把任意输入规范成纯数字 MB；不合法返回空串（由调用方决定回退值）
 fv_normalize_maxsize() {
   local n
   n="$(printf '%s' "${1:-}" | tr -d '[:space:]')"
   [ -n "$n" ] || { echo ""; return 0; }
-  # 只要出现非数字字符就整个不采信 —— 宁可回退默认值，也不要「1e3 被截成 13」这种
-  # 看似成功、实则写进一个莫名其妙的数的情况。
+  # 出现任何非数字字符就整个不采信，避免「1e3 被截成 13」这种看似成功的误写
   case "$n" in
     *[!0-9]*) echo ""; return 0 ;;
   esac
   n="$(printf '%s' "$n" | sed 's/^0*//')"        # 去前导零；全是 0 会变成空串
   [ -n "$n" ] || { echo ""; return 0; }
-  # 位数太多就别交给 $(( )) 了（可能溢出），直接夹到上限
-  [ "${#n}" -le 6 ] || { echo "$FV_MAXSIZE_MAX"; return 0; }
+  [ "${#n}" -le 6 ] || { echo "$FV_MAXSIZE_MAX"; return 0; }   # 位数过多，别交给 $(( )) 冒溢出的险
   n=$((10#$n))                                   # 10# 前缀：避免 0100 被当八进制
   [ "$n" -ge 1 ] || { echo ""; return 0; }
   [ "$n" -le "$FV_MAXSIZE_MAX" ] || n="$FV_MAXSIZE_MAX"
@@ -302,14 +263,9 @@ fv_container_maxsize() {
 # ---------------------------------------------------------------------------
 # 3. 写 .env —— 让命令行里手动 docker compose 也能正常工作
 # ---------------------------------------------------------------------------
-# 踩坑：直接在命令行 `docker compose up -d`，TRIM_APPDEST / TRIM_PKGVAR 为空，
-#   compose 把 "/app/target:rw" 解析成非法挂载，报
-#     invalid spec: :/app/target:rw: empty section between colons
-#   这两个变量只有飞牛框架运行脚本时才注入，手工执行时没有。
-#   compose 会自动读取 compose 文件同目录的 .env，写一份进去即可根治。
-#
-# ⚠️ 只写非空值：写进去一个空的 TRIM_PKGVAR= 反而会把 compose 里的
-#    "${TRIM_PKGVAR}/fonts:..." 解析成非法挂载，比不写更糟。
+# 手工执行时 TRIM_APPDEST / TRIM_PKGVAR 为空，compose 会把 ":/app/target:rw"
+# 解析成非法挂载并整体失败。compose 会自动读取同目录的 .env，写一份即可。
+# ⚠️ 只写非空值：写进去一个空的 TRIM_PKGVAR= 反而会把挂载解析得更糟。
 fv_write_env() {
   [ -n "${TRIM_APPDEST:-}" ] || return 0
   local d="${TRIM_APPDEST}/docker"
@@ -329,24 +285,15 @@ fv_write_env() {
 # ---------------------------------------------------------------------------
 # 3b. 把 compose 里的 ${TRIM_*} 就地替换成真实路径
 # ---------------------------------------------------------------------------
-# 为什么必须做（「点停用报 Request failed」的高度嫌疑）：
-#   compose 里的
-#       - "${TRIM_PKGVAR}/fonts:/usr/local/share/fonts:ro"
-#       - "${TRIM_APPDEST}/docker:/etc/nginx/conf.d:ro"
-#   靠变量插值。而 TRIM_APPDEST / TRIM_PKGVAR **只有飞牛框架执行应用脚本时才注入**。
-#   一旦框架自己那次 `docker compose`（停用 / 卸载 / 更新都会用到）没有这两个变量，
-#   compose 就会把 ":/app/target:rw" 解析成非法挂载并整体失败：
-#       invalid spec: :/app/target:rw: empty section between colons
-#   → 界面只报一句 Request failed, please try again later，看不出真因。
-#   .env 只能救「在 compose 同目录执行」这一种情况，救不了别的工作目录。
-#
-# 所以这里直接把变量替换成字面量，compose 从此不依赖任何环境变量：
-#   升级时框架重新释放 app.tgz 会把模板（含 ${TRIM_*}）覆盖回来，我们下次回调再替换一次。
+# TRIM_APPDEST / TRIM_PKGVAR 只有飞牛框架执行应用脚本时才注入。框架自己那次
+# docker compose（停用 / 卸载 / 更新都会用到）拿不到它们，会整体失败，而界面只报
+# 一句 Request failed。替换成字面量后，compose 不再依赖任何环境变量。
+# 升级时框架重新释放 app.tgz 会把模板（含 ${TRIM_*}）覆盖回来，下次回调再替换一次。
 fv_materialize_env() {
   [ -f "$FV_COMPOSE" ] || return 1
   [ -n "${TRIM_APPDEST:-}" ] || return 1
   [ -n "${TRIM_PKGVAR:-}" ]  || return 1
-  # 已经是字面量（没有 ${TRIM_ 了）就直接返回，保持幂等
+  # 已经是字面量就直接返回，保持幂等
   grep -q '\${TRIM_' "$FV_COMPOSE" 2>/dev/null || return 0
 
   local tmp="${FV_COMPOSE}.mat"
@@ -365,12 +312,9 @@ fv_materialize_env() {
 # ---------------------------------------------------------------------------
 # 4d. 写逐用户权限闸门的开关
 # ---------------------------------------------------------------------------
-# mode=enforce  不可读的文件直接 403（**默认**）
-# mode=log      只把判定结果写进闸门日志，不拦截（出现误拦时的应急开关）
+# mode=enforce 不可读的文件直接 403（默认）；mode=log 只记录不拦截（误拦时的应急开关）。
 # 闸门每次请求现读这个文件，所以改完立即生效，不用重启容器。
-#
-# ⚠️ 只在文件不存在时写入默认值；已存在的值不覆盖 ——
-#    这样手工改成 log 的应急设置不会被后续的保存设置/启动冲掉。
+# ⚠️ 只在文件不存在时写入默认值；已存在的值不覆盖，以免冲掉手工改的应急设置。
 fv_write_acl_conf() {
   [ -n "${TRIM_PKGVAR:-}" ] || return 0
   local conf="${TRIM_PKGVAR}/acl.conf" mode="${1:-}"
@@ -391,7 +335,7 @@ fv_write_acl_conf() {
 }
 
 # ---------------------------------------------------------------------------
-# 4. 统一入口：解析 → 写挂载段 → 写 .env → 记住设置 → 核对容器
+# 4. 统一入口：解析 → 写挂载段 → 写 .env → 写上限 → 核对容器
 # ---------------------------------------------------------------------------
 # 所有回调（安装 / 保存设置 / 升级 / 启动）都走这里，避免任何一条路径漏掉重写。
 # 参数一为空时依次回退：上次保存的设置 → auto。
@@ -408,8 +352,7 @@ fv_sync_volumes() {
 
   fv_save_state "$raw"
 
-  # 把探测的输入也记下来：以后再遇到「某个盘没挂上」，
-  # 看一眼日志就知道是「压根没探到」还是「探到了但没写进去」，不用再猜。
+  # 把探测的输入也记下来，便于区分「压根没探到」和「探到了但没写进去」
   case "$(printf '%s' "$raw" | tr -d '[:space:]' | tr 'A-Z' 'a-z')" in
     auto|"")
       fv_log "探测输入：mounts=[$(fv_mounts_volumes | tr '\n' ' ')] dirs=[$(fv_dir_volumes | tr '\n' ' ')]"
@@ -428,13 +371,13 @@ fv_sync_volumes() {
   # （main start 这类时机拿不到向导变量，只能读状态文件）
   ms="$(fv_normalize_maxsize "${wizard_max_file_mb:-}")"
   [ -n "$ms" ] || ms="$(fv_load_maxsize_state)"
-  ms="$(fv_normalize_maxsize "$ms")"      # 状态文件被人手工改坏也要挡住
+  ms="$(fv_normalize_maxsize "$ms")"      # 状态文件被手工改坏也要挡住
   [ -n "$ms" ] || ms="$FV_MAXSIZE_DEFAULT"
   fv_save_maxsize_state "$ms"
   if fv_write_maxsize "$ms"; then
     fv_log "单文件大小上限已同步：${ms} MB"
   fi
-  # 闸门开关：向导里填了就用向导值，没填就保持现值（main start 这类时机拿不到向导变量）
+  # 闸门开关：向导里填了就用向导值，没填就保持现值
   fv_write_acl_conf "${wizard_acl_gate:-}"
 
   case "$mode" in
@@ -449,14 +392,9 @@ fv_sync_volumes() {
 # ---------------------------------------------------------------------------
 # 4a. 读出 config/resource 里声明的 compose 项目名
 # ---------------------------------------------------------------------------
-# 为什么必须用它，而不是「读现有容器的 project 标签」：
-#   飞牛应用中心是按 config/resource 声明的名字来管这套容器的
-#   （停用 / 启动 / 重建都走这个名字）。
-#   一旦容器实际所属的项目名和声明的名字对不上，飞牛就**看不到这些容器**：
-#     · 点「停用」→ 找不到容器 → 报 Request failed, please try again later
-#     · 更新 / 重建 → 认为没有容器，不会用新配置重建 → 新加的卷永远挂不上
-#   最典型的踩法：在应用目录里手工 `docker compose up -d`（README 以前还推荐过），
-#   compose 默认用**目录名**（docker）当项目名，于是容器就「脱管」了。
+# 飞牛应用中心按这个名字管理容器（停用 / 启动 / 重建都走它）。一旦容器实际所属的
+# 项目名与声明的对不上（脱管），飞牛就看不到这些容器：停用报 Request failed，
+# 也不会用新配置重建容器。
 fv_declared_project() {
   local f="${TRIM_APPDEST:-}/config/resource" n
   [ -r "$f" ] || return 0
@@ -477,19 +415,12 @@ fv_current_project() {
 # ---------------------------------------------------------------------------
 # 4c. 清掉 compose 重建被中断时残留的「临时容器」
 # ---------------------------------------------------------------------------
-# 名字形如 <12位十六进制>_basemetas-fileview-xxx，是 compose 用 --force-recreate
-# 重建带 container_name 的容器时的中间产物：先建临时名的新容器 → 删旧的 → 再改名。
+# 名字形如 <12位十六进制>_basemetas-fileview-xxx，是 --force-recreate 重建带
+# container_name 的容器时的中间产物（先建临时名的新容器 → 删旧的 → 再改名）。
+# 重建被中途打断就会留下它；它与正式容器同名同项目，此后飞牛每次停用 / 卸载
+# 都会去停它并报 No such container，界面显示 Request failed。
 #
-# ⚠️ 为什么必须清（2026-09-27 实测踩到，而且是**持续失败**不是偶发）：
-#   重建一旦被中途打断（回调脚本超时被杀、进程被 kill），临时容器就留下来了。
-#   它和正式容器同名同项目，此后飞牛每次停用 / 卸载都会去停它：
-#       Container f355c8f78542_basemetas-fileview-engine  Stopping
-#       Container basemetas-fileview-engine               Error while Stopping
-#       Error response from daemon: No such container: f355c8f78542…
-#   → 界面每次都是 Request failed。
-#   只按正式容器名强删（0.5.7 的卸载修复）删不到它，所以必须按名字模式清。
-#
-# 安全：只删名字严格匹配 `<12位十六进制>_basemetas-fileview-` 的容器，不误伤其它容器。
+# 安全：只删名字严格匹配该模式的容器，不误伤其它容器。
 fv_clean_orphans() {
   command -v docker >/dev/null 2>&1 || return 0
   local n
@@ -504,27 +435,19 @@ fv_clean_orphans() {
 }
 
 # ---------------------------------------------------------------------------
-# 5. 重建容器 —— 「改了设置却不生效」的根治
+# 5. 重建容器 —— 让配置改动真正生效
 # ---------------------------------------------------------------------------
-# 踩坑：改完设置、compose 文件里也确实多了 /vol3，但容器不重建，
-#       bind 挂载是不会自己生效的（docker restart 也不行，必须重建）。
-#       而飞牛框架在保存设置后并不会重建容器，只能我们自己来。
-#
-# 项目名：**必须用 config/resource 里声明的名字**（框架认这个名字），
-#   而不是「现有容器的标签」—— 否则会出现「容器属于 docker、框架管 basemetas-fileview」
-#   这种脱管状态：框架停不掉、也不会拿新配置重建，表现就是
-#   「保存设置没反应 + 点停用报 Request failed」。
-#
-# ⚠️ 这里以前把所有输出和退出码都吞掉了（`>/dev/null 2>&1`），
-#    于是「docker compose 失败」和「一切正常」在用户看来完全一样。
-#    现在失败会写日志 + 写 TRIM_TEMP_LOGFILE。
+# bind 挂载和容器环境变量都在容器创建那一刻定死，改完 compose 必须重建容器
+# （docker restart 也不行）；而飞牛框架保存设置后不会重建，只能自己来。
+# 项目名必须用 config/resource 里声明的那个，否则容器会脱管。
+# 重建失败要写日志 + 写 TRIM_TEMP_LOGFILE，不能让失败看起来和成功一样。
 fv_rebuild() {
   [ -n "${TRIM_APPDEST:-}" ] || return 0
   command -v docker >/dev/null 2>&1 || { fv_log "跳过重建容器：找不到 docker 命令"; return 0; }
   # 没有 docker 权限就别装了 —— 明确写出来，别让它看起来像「已经重建成功」
   fv_docker_ok || { fv_docker_denied_note; return 0; }
 
-  # 先把上次重建被打断留下的临时容器清掉，否则 compose 会因为名字冲突/残留状态失败
+  # 先清掉上次重建被打断留下的临时容器，否则 compose 会因为名字冲突 / 残留状态失败
   fv_clean_orphans
 
   local d="${TRIM_APPDEST}/docker"
@@ -539,8 +462,8 @@ fv_rebuild() {
   [ -n "$want" ] || want="$cur"
   [ -n "$want" ] || want="docker"
 
-  # 项目名不一致 → 容器「脱管」。必须先删掉再按声明名重建，
-  # 否则 compose 会因为「容器名已被占用」直接失败（Conflict: container name already in use）。
+  # 项目名不一致 → 容器脱管。必须先删掉再按声明名重建，
+  # 否则 compose 会因为「容器名已被占用」直接失败。
   if [ -n "$cur" ] && [ "$cur" != "$want" ]; then
     fv_log "容器当前属于 compose 项目 ${cur}，与声明的 ${want} 不一致（脱管）；先删除再按 ${want} 重建"
     docker rm -f basemetas-fileview-engine basemetas-fileview-gateway >/dev/null 2>&1
@@ -566,35 +489,24 @@ fv_rebuild() {
 }
 
 # ---------------------------------------------------------------------------
-# 4b. 核对引擎容器里**真的**能看到这些卷，缺了就重建
+# 4b. 核对引擎容器里真的能看到这些卷，缺了就重建
 # ---------------------------------------------------------------------------
-# 为什么需要（实测踩到的坑）：
-#   引擎容器的日志里报 `文件不存在: /vol1/1000/某目录/某文件.ofd`，而同一时刻 /vol1 的文件
-#   一切正常 —— 说明请求链路没问题，是 **/vol3 根本没挂进引擎容器**。
-#   而「只改 docker-compose.yaml」在两种情况下是不够的：
-#     ① 飞牛框架可能在我们回调之前就用模板把容器建好了，之后未必再 `compose up`；
-#     ② 老容器已经存在、compose 认为配置没变，就不会重建。
-#   bind 挂载在容器创建那一刻就定死了，文件改多少次都没用，只能重建容器。
-#   所以在「启动」「安装」这两个时机主动进容器核对一遍，缺卷就重建，把这一环兜住。
+# 用 docker exec test -d 而不是解析 docker inspect：判据是「引擎进程自己看得见吗」，
+# 与引擎报「文件不存在」是同一个判据。
 #
-# 用 `docker exec` 而不是解析 `docker inspect`：
-#   前者问的就是「引擎进程自己看得见吗」，和 FileView 报「文件不存在」是同一个判据。
+# ⚠️ 必须区分两种病，它们都会报「文件不存在」，但只测 test -d 会把第二种误判成正常：
+#   ① 容器里压根没有该卷
+#   ② 容器里有该卷，但是个空目录 —— 容器创建时盘还没挂上（机械盘比系统盘慢，
+#      重启后尤其明显），docker 绑到的是底层空目录，之后宿主机挂上盘，容器里仍然空。
 #
-# ⚠️ 必须区分两种病（这两种都会报「文件不存在」，但修法一样、判据不一样）：
-#   ① 容器里压根没有 /vol3           → test -d 失败
-#   ② 容器里有 /vol3，但是个**空目录** → test -d 通过，但内容对不上
-#   ② 是真会发生的：容器创建时该卷还没挂上（机械盘挂载比系统盘慢，重启后尤其明显），
-#      docker 就把**底层空目录**绑了进去；之后宿主机把盘挂上，容器里仍然是空的。
-#      只测 test -d 会误判成「一切正常」。
-# 把任意分隔（逗号/空格/换行）的 /volN 列表规范化成「按卷号排序的逗号串」，
-# 用来比较「期望挂载的卷」和「容器实际挂载的卷」。
+# 把任意分隔（逗号/空格/换行）的 /volN 列表规范化成「按卷号排序的逗号串」，用于比对。
 fv_canon_vols() {
   tr ',' '\n' | tr ' ' '\n' \
     | awk -F'/' '/^\/vol[0-9]+$/ {n=$2; sub(/^vol/, "", n); print n "\t" $0}' \
     | sort -n -u | cut -f2 | tr '\n' ',' | sed 's/,$//'
 }
 
-# 引擎容器**实际** bind 挂载了哪些 /volN
+# 引擎容器实际 bind 挂载了哪些 /volN
 fv_container_vols() {
   docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}} {{end}}{{end}}' \
     basemetas-fileview-engine 2>/dev/null | fv_canon_vols
@@ -610,8 +522,7 @@ fv_ensure_mounts() {
   # 容器没跑起来就没什么可核对的（安装阶段就是这种情况，交给框架首次创建）
   [ "$(docker inspect -f '{{.State.Status}}' basemetas-fileview-engine 2>/dev/null)" = "running" ] || return 0
 
-  # 「脱管」检查：容器所属项目必须和 config/resource 声明的一致，
-  # 否则飞牛停不掉、也不会拿新配置重建 —— 症状就是「保存设置没反应 + 停用报错」。
+  # 脱管检查：容器所属项目必须和 config/resource 声明的一致
   local want cur
   want="$(fv_declared_project)"
   cur="$(fv_current_project)"
@@ -622,12 +533,9 @@ fv_ensure_mounts() {
   fi
 
   # ── 第一关：挂载清单**双向**比对 ─────────────────────────────────────
-  # 少了要重建（新加的卷没挂上）；多了也要重建（用户把某个卷从列表里去掉了）。
-  # 两边一致就**不要**动容器 —— 这一点很重要：
-  #   config_callback 以前无条件 --force-recreate，等于每次「保存设置」都重建一遍容器。
-  #   而重建期间容器会短暂以 <hash>_<name> 的临时名存在，如果此刻飞牛正在停用/卸载，
-  #   它手里的容器 ID 就失效了，报 "No such container" → 界面显示 Request failed。
-  #   实际就踩到过：11:51:05 框架停容器，11:51:06 我们在重建。
+  # 少了要重建（新加的卷没挂上），多了也要重建（用户把某个卷从列表里去掉了）。
+  # 两边一致就**不要**动容器 —— 无谓的重建会让容器短暂以 <hash>_<name> 的临时名存在，
+  # 若此刻飞牛正在停用 / 卸载，它手里的容器 ID 就失效了，界面会报 Request failed。
   wanted_vols="$(printf '%s\n' "$list" | fv_canon_vols)"
   actual_vols="$(fv_container_vols)"
   if [ "$actual_vols" != "$wanted_vols" ]; then
@@ -637,9 +545,8 @@ fv_ensure_mounts() {
   fi
 
   # ── 第一关之二：环境变量也要对得上 ───────────────────────────────────
-  # 单文件大小上限是通过环境变量注入的，而环境变量和 bind 挂载一样，
-  # 只在容器创建那一刻定死 —— 改完不重建容器就不生效。
-  # 这里补一道比对，顺便把「安装时框架先建容器、回调后写 compose」的时序差也兜住。
+  # 单文件大小上限是通过环境变量注入的，和 bind 挂载一样只在容器创建那一刻定死。
+  # 这一关顺带把「安装时框架先建容器、回调后写 compose」的时序差也兜住。
   local want_ms actual_ms
   want_ms="$(fv_compose_maxsize)"
   actual_ms="$(fv_container_maxsize)"

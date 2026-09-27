@@ -1,21 +1,18 @@
 #!/bin/bash
 # 按安装向导填写的存储卷，重建 docker-compose.yaml 里的挂载段。
 #
-# 默认值为 auto：直接以宿主机真实挂载的存储卷为准（/vol1、/vol2、/vol3 …… 全都要），
-# 不再写死 /vol1,/vol2 —— 否则新加的盘永远预览不了，卸载重装还会再次踩到。
-#
+# 默认 auto：以宿主机真实挂载的存储卷为准，不写死 /vol1,/vol2。
 # 任何异常都不阻断安装流程：失败时保留 compose 里的默认挂载段。
 
-# ⚠️ 这个公共库放在 docker/ 目录下，是因为 fnpack 打包 app.tgz 时只收
-#    docker/、ui/、config/ 这几个目录，放在别处（试过 lib/）会被整目录丢掉，
-#    装上以后脚本 source 不到、静默走 exit 0，极难排查。
+# ⚠️ 公共库必须放在 docker/ 目录下：fnpack 打包 app.tgz 时只收 docker/、ui/、config/，
+#    放到别处（如 lib/）会被整目录丢掉，装上以后脚本 source 不到、静默 exit 0。
 LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 [ -r "$LIB" ] || exit 0
 . "$LIB"
 
 fv_prepare_fonts
-# ensure：容器若已存在（框架可能先建了容器再跑本回调），进容器核对一遍，
-#         缺卷就重建；容器还不存在时什么都不做，交给框架首次创建。
+# ensure：容器若已存在（框架可能先建了容器再跑本回调）就进容器核对一遍，缺卷则重建；
+#         容器还不存在时什么都不做，交给框架首次创建。
 fv_sync_volumes "${wizard_volumes:-}" ensure >/dev/null
 
 exit 0

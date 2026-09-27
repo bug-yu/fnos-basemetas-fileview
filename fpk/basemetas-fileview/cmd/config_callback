@@ -1,29 +1,23 @@
 #!/bin/bash
-# 在应用「设置」里改存储卷后：重建挂载段 + **重建容器**。
+# 在应用「设置」里改存储卷后：重建挂载段 + 重建容器。
 #
-# ⚠️ 第二步是重点：
-#   只改 docker-compose.yaml 是不够的 —— bind 挂载不会在运行中的容器里生效，
-#   docker restart 也不行，必须重建容器。而飞牛框架保存设置后不会重建容器，
-#   所以这一步必须自己做，否则就是「设置里明明有 /vol3，预览还是报文件不存在」。
+# ⚠️ 第二步是重点：bind 挂载不会在运行中的容器里生效（docker restart 也不行），
+#    而飞牛框架保存设置后不会重建容器，必须自己做。
 
-# ⚠️ 公共库放在 docker/ 目录下（fnpack 只收 docker/、ui/、config/），
-#    见 install_callback 里的说明。
+# ⚠️ 公共库必须放在 docker/ 目录下（fnpack 只收 docker/、ui/、config/），见 install_callback。
 LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 [ -r "$LIB" ] || exit 0
 . "$LIB"
 
 fv_prepare_fonts
 # ensure：只在挂载清单**真的变了**才重建容器（双向比对：少了要重建，多了也要重建）。
-# ⚠️ 以前这里是无条件 rebuild —— 等于每次「保存设置」都 --force-recreate 一遍容器。
-#    重建期间容器会短暂以 <hash>_<name> 的临时名存在；若此刻飞牛正在停用/卸载，
-#    它手里的容器 ID 就失效了，报 "No such container" → 界面显示 Request failed。
-#    实测踩到过：11:51:05 框架停容器，11:51:06 我们在重建。
+# 不要无条件 rebuild —— 重建期间容器会短暂以 <hash>_<name> 的临时名存在，
+# 若此刻飞牛正在停用 / 卸载，它手里的容器 ID 就失效了，界面会报 Request failed。
 fv_sync_volumes "${wizard_volumes:-}" ensure >/dev/null
 
 # 顺带跑一次开放 API 预检（只读，不阻塞、不报错）。
-# 为什么挂在「保存设置」上：`cmd/main start` 只在应用经历「停止 → 启动」状态迁移时才被调用，
-# 而实际使用中应用很少停过（停用本身还可能失败），于是预检根本不会执行。
-# 挂在这里 —— 保存一次设置就能拿到结论。
+# 挂在「保存设置」上是因为 cmd/main start 只在应用经历「停止 → 启动」时才被调用，
+# 而实际使用中应用很少停过，预检根本不会执行。
 if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
   . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
   fv_acl_probe "config_callback（保存设置）"

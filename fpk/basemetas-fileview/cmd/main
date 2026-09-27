@@ -16,11 +16,8 @@ is_running() {
   docker inspect "$1" 2>/dev/null | grep -q '"Status": "running"'
 }
 
-# 安装完整性检查
-# 背景：安装包内的 app.tgz 若未释放到 ${TRIM_APPDEST}，
-# docker 会因 bind 挂载源不存在而报
-#   "not a directory: Are you trying to mount a directory onto a file"
-# 这种报错完全看不出真正原因。这里提前判断并给出人话提示。
+# 安装完整性检查：安装包内的 app.tgz 若未释放到 ${TRIM_APPDEST}，docker 会因 bind 挂载源
+# 不存在而报 "not a directory: ..."，看不出真正原因。这里提前判断并给出人话提示。
 files_ok() {
   [ -n "$TRIM_APPDEST" ] && [ -f "$COMPOSE" ] && [ -f "$NGINXCONF" ]
 }
@@ -40,31 +37,24 @@ case "$1" in
       report_incomplete
       exit 1
     fi
-    # 清掉可能残留的 app.sock
-    # 背景：它落在 ${TRIM_APPDEST} 这个宿主机目录里，容器删了文件还在。
-    # nginx 不会自己清理已存在的 unix socket，下次启动直接
-    #   bind() ... failed (98: Address already in use) → 退出 → Restarting 死循环。
-    # compose 的启动命令里也清了一次，这里是双保险（覆盖升级路径上 compose 命令可能还没换过来）。
+    # 清掉可能残留的 app.sock：它落在 ${TRIM_APPDEST} 这个宿主机目录里，容器删了文件还在；
+    # nginx 不会自己清理已存在的 unix socket，下次启动会 bind() failed (98) 并陷入重启循环。
+    # compose 的启动命令里也清了一次，这里是双保险。
     rm -f "${TRIM_APPDEST}/app.sock" 2>/dev/null
 
     # 同步存储卷挂载段（幂等；顺带补生成 docker/.env）。
-    #
-    # 背景（这是「升级完 vol3 又预览不了」的根治点）：
-    #   升级时框架会把新的 app.tgz 重新释放到 ${TRIM_APPDEST}，
-    #   docker/docker-compose.yaml 被覆盖回安装包模板里写死的 /vol1、/vol2，
-    #   之前按设置写好的 /vol3 就此丢失。手工改过、从备份恢复、旧版本升上来也一样。
-    #   框架紧接着就会用这份 compose 起容器，所以这里是成本最低的「自愈」点 ——
-    #   写在这里，用户不必再去「设置」里保存一次才能让新加的盘生效。
+    # 升级时框架会把新的 app.tgz 重新释放到 ${TRIM_APPDEST}，docker-compose.yaml 被覆盖回
+    # 模板里写死的挂载段，之前按设置写好的卷就此丢失。框架紧接着就用这份 compose 起容器，
+    # 所以这里是成本最低的自愈点 —— 写在这里，用户不必再去「设置」里保存一次。
     if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
       . "${TRIM_APPDEST}/docker/fv-volumes.sh"
       fv_prepare_fonts
       fv_sync_volumes "" ensure >/dev/null
     fi
 
-    # 飞牛开放 API 预检（只读，不改任何东西）：
-    #   用来确认「按用户校验文件权限」这条路能不能走通 —— 需要 token、API socket、已授权目录三件事。
-    #   结果写进 ${TRIM_PKGVAR}/fv-volumes.log。详见 app/docker/fv-acl-probe.sh 头部注释。
-    #   全程不阻塞启动：任何失败都只是写日志。
+    # 飞牛开放 API 预检（只读，不改任何东西）：确认「按用户校验文件权限」这条路能不能
+    # 走通 —— 需要 token、API socket、已授权目录三件事。结果写进 ${TRIM_PKGVAR}/fv-volumes.log。
+    # 全程不阻塞启动：任何失败都只是写日志。详见 app/docker/fv-acl-probe.sh 头部注释。
     if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
       . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
       fv_acl_probe "main start"
@@ -84,18 +74,9 @@ case "$1" in
 
   stop)
     # ⚠️ 这里**故意什么都不做**，只记一行诊断日志。
-    #
-    # 历史教训（0.5.8 → 0.5.12 一路踩过来的）：
-    #   0.5.8 起这里加过「兜底停容器」，先试过 `docker compose stop`，后来改成 `docker stop -t 5`。
-    #   实测结果是**越帮越忙**：
-    #     1) 我们先把容器停掉，框架随后自己那次 compose stop/down 看到的状态就对不上了；
-    #     2) `-t 5` 太短 —— 引擎是 Java + redis + rocketmq 的栈，5 秒内退不干净就被 SIGKILL，
-    #        退出码变成 137，飞牛界面显示「容器错误退出(137)」；
-    #     3) 重建窗口 + 停用叠加，还会看到
-    #          Container <hash>_basemetas-fileview-engine  Stopping
-    #          Error response from daemon: No such container: <hash>
-    #   而**观测事实是：不加任何干预时容器本来就能正常停下**（框架自己的 compose 会处理）。
-    #   所以这里保持空操作最安全，只留日志，方便确认它到底有没有被调用、调用时容器是什么状态。
+    # 启停动作交给框架自己的 docker compose —— 抢在它前面停容器会让两边状态对不上；
+    # 而 docker stop -t 5 对 Java + redis + rocketmq 这套栈太短，被 SIGKILL 后退出码变成
+    # 137，界面会显示「容器错误退出(137)」。不加干预时容器本来就能正常停下。
     if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
       . "${TRIM_APPDEST}/docker/fv-volumes.sh"
       fv_log "── cmd/main stop 被调用（本脚本不停容器，交给框架）──"

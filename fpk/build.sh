@@ -17,7 +17,10 @@ if [ ! -x "$HERE/tools/fnpack" ]; then
   exit 1
 fi
 
-echo "[1/1] 调用飞牛官方 fnpack 打包"
+echo "[1/2] 检查行尾（CRLF 的脚本会让回调在 Linux 上静默失效）"
+bash "$HERE/tools/check_eol.sh" "$HERE/basemetas-fileview" || exit 1
+
+echo "[2/2] 调用飞牛官方 fnpack 打包"
 cd "$HERE"
 "$HERE/tools/fnpack" build --directory "$HERE/basemetas-fileview"
 
