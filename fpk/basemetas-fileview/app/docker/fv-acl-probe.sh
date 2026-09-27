@@ -48,7 +48,9 @@ fv_json_vol_paths() {
 }
 
 fv_acl_probe() {
+  local from="${1:-未标注}"
   fv_log "──────── 飞牛开放 API 预检（只读）────────"
+  fv_log "调用来源：${from}"
   fv_log "运行用户：$(id -un 2>/dev/null) (uid=$(id -u 2>/dev/null))"
   fv_log "系统版本：${TRIM_SYS_VERSION:-（未注入 TRIM_SYS_VERSION）}"
   if [ -n "${TRIM_SYS_VERSION:-}" ]; then
@@ -70,6 +72,9 @@ fv_acl_probe() {
   # ② socket
   if [ -S "$FV_ACL_SOCKET" ]; then
     fv_log "② API socket：存在  $(ls -l "$FV_ACL_SOCKET" 2>/dev/null)"
+    if command -v getfacl >/dev/null 2>&1; then
+      fv_log "   socket ACL：$(getfacl -p "$FV_ACL_SOCKET" 2>/dev/null | tr '\n' ' ')"
+    fi
   else
     fv_log "② API socket：**不存在**（$FV_ACL_SOCKET）"
   fi
@@ -79,10 +84,26 @@ fv_acl_probe() {
     fv_log "   curl：**未安装**"
   fi
 
+  # ②b 不管有没有 token，都**实际连一次** socket ——
+  #    用来区分「应用用户连不上 socket（权限）」和「只是缺 token」，这两种修法完全不同。
+  local probe_out=""
+  if [ -S "$FV_ACL_SOCKET" ] && command -v curl >/dev/null 2>&1; then
+    probe_out="$(curl -sS --max-time 5 --unix-socket "$FV_ACL_SOCKET" -w ' HTTP=%{http_code}' \
+        -X POST "http://localhost/api/v1/trimapp" \
+        -H 'Content-Type: application/json' \
+        -d "{\"reqId\":\"0\",\"req\":\"trim.system.getPlatformConfig\",\"appName\":\"${FV_ACL_APPNAME}\",\"data\":{}}" 2>&1)"
+    fv_log "   socket 实测（不带 token）：$(printf '%s' "$probe_out" | tr '\n' ' ')"
+  fi
+
   # 前置不满足就别往下调了，直接给结论
   if [ -z "${TRIM_API_TOKEN:-}" ] || [ ! -S "$FV_ACL_SOCKET" ] || ! command -v curl >/dev/null 2>&1; then
-    fv_log "结论：① / ② 不满足，**逐用户权限校验走不通**。"
-    fv_log "      此时只能退而求其次：网关级用户白名单（只让管理员或指定 uid 使用本应用）。"
+    case "$probe_out" in
+      *[Pp]ermission\ denied*|*[Cc]ouldn\'t\ connect*|*[Cc]onnection\ refused*|"")
+        fv_log "结论：socket 也连不上（见上面实测），开放 API 这条路**当前走不通**。" ;;
+      *)
+        fv_log "结论：socket 本身**可连通**（上面实测有响应），**只差 TRIM_API_TOKEN**。" ;;
+    esac
+    fv_log "      退路：网关级用户白名单（只让管理员或指定 uid 使用本应用）。"
     fv_log "──────── 预检结束 ────────"
     return 0
   fi

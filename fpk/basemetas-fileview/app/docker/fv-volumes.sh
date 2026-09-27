@@ -113,7 +113,10 @@ fv_mounts_volumes() {
 
 fv_dir_volumes() {
   local d
-  for d in /vol[0-9] /vol[0-9][0-9] /vol[0-9][0-9][0-9]; do
+  # ⚠️ 只认「没有前导零」的卷号：飞牛的存储卷是 /vol1、/vol2、/vol3…
+  #    实测真机上存在 /vol00 这种目录（不是存储卷），旧写法 /vol[0-9][0-9] 会把它一起收进来。
+  #    用户显式填写的列表不走这里（见 fv_normalize），所以不受影响。
+  for d in /vol[1-9] /vol[1-9][0-9] /vol[1-9][0-9][0-9]; do
     [ -d "$d" ] || continue
     printf '%s\n' "$d"
   done
@@ -405,8 +408,22 @@ fv_rebuild() {
 #   ② 是真会发生的：容器创建时该卷还没挂上（机械盘挂载比系统盘慢，重启后尤其明显），
 #      docker 就把**底层空目录**绑了进去；之后宿主机把盘挂上，容器里仍然是空的。
 #      只测 test -d 会误判成「一切正常」。
+# 把任意分隔（逗号/空格/换行）的 /volN 列表规范化成「按卷号排序的逗号串」，
+# 用来比较「期望挂载的卷」和「容器实际挂载的卷」。
+fv_canon_vols() {
+  tr ',' '\n' | tr ' ' '\n' \
+    | awk -F'/' '/^\/vol[0-9]+$/ {n=$2; sub(/^vol/, "", n); print n "\t" $0}' \
+    | sort -n -u | cut -f2 | tr '\n' ',' | sed 's/,$//'
+}
+
+# 引擎容器**实际** bind 挂载了哪些 /volN
+fv_container_vols() {
+  docker inspect -f '{{range .Mounts}}{{if eq .Type "bind"}}{{.Source}} {{end}}{{end}}' \
+    basemetas-fileview-engine 2>/dev/null | fv_canon_vols
+}
+
 fv_ensure_mounts() {
-  local list="$1" v missing="" hn cn
+  local list="$1" v missing="" hn cn wanted_vols actual_vols
   [ -n "$list" ] || return 0
   [ -n "${TRIM_APPDEST:-}" ] || return 0
   command -v docker >/dev/null 2>&1 || return 0
@@ -426,6 +443,22 @@ fv_ensure_mounts() {
     return 0
   fi
 
+  # ── 第一关：挂载清单**双向**比对 ─────────────────────────────────────
+  # 少了要重建（新加的卷没挂上）；多了也要重建（用户把某个卷从列表里去掉了）。
+  # 两边一致就**不要**动容器 —— 这一点很重要：
+  #   config_callback 以前无条件 --force-recreate，等于每次「保存设置」都重建一遍容器。
+  #   而重建期间容器会短暂以 <hash>_<name> 的临时名存在，如果此刻飞牛正在停用/卸载，
+  #   它手里的容器 ID 就失效了，报 "No such container" → 界面显示 Request failed。
+  #   实际就踩到过：11:51:05 框架停容器，11:51:06 我们在重建。
+  wanted_vols="$(printf '%s\n' "$list" | fv_canon_vols)"
+  actual_vols="$(fv_container_vols)"
+  if [ "$actual_vols" != "$wanted_vols" ]; then
+    fv_log "引擎容器挂载与期望不一致（容器=${actual_vols:-无} 期望=${wanted_vols}），重建容器"
+    fv_rebuild
+    return 0
+  fi
+
+  # ── 第二关：名字对上了还不够，逐个确认真的可见、且不是空目录 ────────
   local OLD_IFS="$IFS"
   IFS=','
   for v in $list; do

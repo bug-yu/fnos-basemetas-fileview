@@ -6,7 +6,63 @@
 
 ---
 
+## 0.5.11
+
+### 停用失败的真因：容器重建竞态
+
+拿到 `/var/log/trim_app_center/error.log` 后，飞牛自己把话说清楚了：
+
+```
+level=error msg="stop app" appName=basemetas-fileview class=stop
+error="12006:exit status 1:
+ Container basemetas-fileview-engine                 Stopping
+ Container f355c8f78542_basemetas-fileview-engine    Stopping
+ Container basemetas-fileview-engine                 Error while Stopping
+ Container f355c8f78542_basemetas-fileview-engine    Stopped
+Error response from daemon: No such container: f355c8f785421a50…"
+```
+
+`f355c8f78542_basemetas-fileview-engine` 是 **compose 重建容器时的临时名**。
+对照我们自己的日志：
+
+```
+11:51:05   ← 框架在停容器
+11:51:06 容器已重建（project=basemetas-fileview，原 basemetas-fileview）
+```
+
+**同一秒里，框架在停容器、我们在重建它们**，于是框架手里的容器 ID 失效，报 `No such container`。
+
+根因是 `config_callback` 以前**无条件** `--force-recreate`：等于每次「保存设置」都把容器重建一遍，
+哪怕配置一个字都没改。重建窗口内容器会短暂以 `<hash>_<name>` 存在，任何并发的停用/卸载都会踩中。
+
+### 修复
+
+- **`config_callback` 改成 `ensure` 模式：挂载清单双向比对，真的变了才重建。**
+  - 少了 → 重建（新加的卷没挂上）
+  - 多了 → 重建（用户把某个卷从列表里去掉了）
+  - 一致 → **不动容器**
+  新增 `fv_canon_vols` 把「期望列表」和「容器实际挂载」规范成同一形式再比较
+  （统一分隔符、按卷号数值排序，`/vol2` 排在 `/vol10` 前面）。
+- **`cmd/main stop` 去掉多余的 `docker compose stop`**，只保留最小兜底 `docker stop -t 5`。
+  框架自己会停，我们再叠一层 compose 只会增加互相干扰的机会。
+- **`fv_dir_volumes` 排除带前导零的卷号。** 实测真机上存在 `/vol00`（不是存储卷），
+  旧写法 `/vol[0-9][0-9]` 会把它一起收进挂载列表。用户显式填写的列表不受影响。
+
+### 预检增强（开放 API）
+
+- 记录**调用来源**（`main start` / `config_callback`）—— 用来判断 `TRIM_API_TOKEN` 是不是只在某个上下文里注入。
+- **实际连一次 socket**（不带 token），把原始响应写进日志：用来区分
+  「应用用户连不上 socket（权限问题）」和「只是缺 token」，这两者修法完全不同。
+- 打印 socket 的 `getfacl`。
+
+---
+
 ## 0.5.10
+
+> **后续更正（0.5.11）**：拿到 `/var/log/trim_app_center/error.log` 后确认，
+> 停用失败的真因是**容器重建竞态**（见 0.5.11），不是下面这个变量插值问题。
+> 本改动**保留**——去掉 compose 对环境变量的依赖本身是有价值的（框架自己跑 compose 时确实不保证注入），
+> 但它不是停用失败的修复。
 
 本次修的是「**点停用报 `Request failed, please try again later`**」——这个报错看不出任何原因，
 而且它还会连带卡住卸载 / 重装。

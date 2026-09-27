@@ -13,9 +13,12 @@ LIB="${TRIM_APPDEST}/docker/fv-volumes.sh"
 . "$LIB"
 
 fv_prepare_fonts
-# rebuild：这里必须**无条件**重建容器 —— 用户可能是把某个卷从列表里去掉，
-#          这种情况没有「缺卷」可检测，只有重建才会让旧挂载消失。
-fv_sync_volumes "${wizard_volumes:-}" rebuild >/dev/null
+# ensure：只在挂载清单**真的变了**才重建容器（双向比对：少了要重建，多了也要重建）。
+# ⚠️ 以前这里是无条件 rebuild —— 等于每次「保存设置」都 --force-recreate 一遍容器。
+#    重建期间容器会短暂以 <hash>_<name> 的临时名存在；若此刻飞牛正在停用/卸载，
+#    它手里的容器 ID 就失效了，报 "No such container" → 界面显示 Request failed。
+#    实测踩到过：11:51:05 框架停容器，11:51:06 我们在重建。
+fv_sync_volumes "${wizard_volumes:-}" ensure >/dev/null
 
 # 顺带跑一次开放 API 预检（只读，不阻塞、不报错）。
 # 为什么挂在「保存设置」上：`cmd/main start` 只在应用经历「停止 → 启动」状态迁移时才被调用，
@@ -23,7 +26,7 @@ fv_sync_volumes "${wizard_volumes:-}" rebuild >/dev/null
 # 挂在这里 —— 保存一次设置就能拿到结论。
 if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
   . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
-  fv_acl_probe
+  fv_acl_probe "config_callback（保存设置）"
 fi
 
 exit 0
