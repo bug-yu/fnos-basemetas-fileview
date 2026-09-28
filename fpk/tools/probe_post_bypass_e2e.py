@@ -41,6 +41,7 @@ import json
 import ssl
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -149,5 +150,4 @@ def main():
 
 
 if __name__ == "__main__":
-    import urllib.parse  # noqa
     sys.exit(main())
