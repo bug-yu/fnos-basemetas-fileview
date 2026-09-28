@@ -234,6 +234,15 @@ Error response from daemon: layer does not exist
 bash tools/fv-docker-doctor.sh
 ```
 
+**报错里点了名的那个镜像，就是本地状态坏掉的那个。** 两种写法都要留意：
+
+| 报错 | 含义 |
+|---|---|
+| `Error response from daemon: layer does not exist`（在 `Pulling` 列表之后） | 拉取过程中撞上了坏的本地层 |
+| `unable to get image 'nginx:alpine': Error response from daemon: layer does not exist` | **明确就是 `nginx:alpine` 本地坏了** —— 直接按下面第 3 步处理它 |
+
+三个镜像各自的作用，方便判断影响面：`nginx:alpine` 是网关、`python:3-alpine` 是权限闸门、`basemetas/fileview:1.5.2` 是引擎。**报错点名哪个，就 `docker rmi -f` 哪个再重拉**，不用动其它的。
+
 最常见的三种成因：
 
 | 成因 | 判据（看诊断的哪一节） |
@@ -255,9 +264,9 @@ bash tools/fv-docker-doctor.sh
 docker pull nginx:alpine
 docker pull basemetas/fileview:1.5.2
 
-# 3. 报同样的错 → 把这两个镜像清掉再拉（只影响本应用）
-docker rmi -f nginx:alpine basemetas/fileview:1.5.2
-docker pull nginx:alpine && docker pull basemetas/fileview:1.5.2
+# 3. 报同样的错 / 报错里点名了某个镜像 → 把那个镜像清掉再拉（只影响本应用）
+docker rmi -f nginx:alpine
+docker pull nginx:alpine
 
 # 4. 还不行 / 断电之后 → 重启 daemon，让它重建内容库索引
 systemctl restart docker
