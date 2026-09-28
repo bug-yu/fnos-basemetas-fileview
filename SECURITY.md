@@ -56,7 +56,7 @@
 
 真正需要注意的是：三容器之间**没有网络隔离**（engine ↔ gateway ↔ acl 可互访），因为它们本就靠同一网络协作。这不构成跨应用风险。
 
-### ✅ 5. 路径穿越 / 后缀绕过 —— 准确（且已确认可利用）—— 0.5.25 已修
+### ⚠️ 5. 路径穿越 / 后缀绕过 —— 准确（且已确认可利用）—— 0.5.25 已修
 
 `SKIP_EXT` 只看 URI 后缀就放行是一处**真实旁路**。审计指出后，我实测验证：
 
@@ -69,11 +69,35 @@ GET /preview/api/file?filePath=/vol1/…/sample.docx       → 200
 
 **0.5.25 已修**：扩展名短路只在「请求自己没带 `/vol` 路径」时生效。带 `?filePath=/vol…` 或 `X-Acl-Path: /vol…` 的一律落到正常判定。12 条判定矩阵单测（`fpk/tools/test_acl_decide.py`）已并入自检。
 
-### ✅ 6. POST body 里的路径判定不到 —— 准确，但影响有限
+### 🔴 6. POST body 里的路径判定不到 —— 准确，**已升级为高危**（2026-09-29 复核）
 
-nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径」的接口无法由闸门判定路径。当前缓解是**退回来源页 URL 里的 `path`**（`X-Acl-Ref`）。
+> ⚠️ **本条在 0.5.25 里被误判为「低优先级」，现已更正。** 详见
+> [`fpk/tools/POST-BYPASS-REVIEW.md`](fpk/tools/POST-BYPASS-REVIEW.md) 与
+> [`fpk/tools/probe_post_bypass.py`](fpk/tools/probe_post_bypass.py)。
 
-残余风险：若某 POST 接口的 body 路径与来源页不一致，判定可能用错路径。**待办**：逐一枚举 POST 接口，确认每个都满足「来源页 path 能代表目标文件」。当前判定为**低优先级**（本地预览主链路是 GET）。
+nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径」的接口无法由闸门判定路径。
+
+**2026-09-29 源码级复核结论（`fileview-backend` 开源，直接读源码）：**
+
+- `POST /preview/api/localFile`、`/netFile` 存在，参数 `@Valid @RequestBody FilePreviewRequest`，路径字段是 **`srcRelativePath`**；
+- 该字段的 `@SecurePath` 校验器**只挡 `..` 穿越，不禁止绝对路径** → `/vol2/<别人uid>/私密.docx` 直接通过；
+- 到 `new File(actualFilePath)` 之间**没有根目录限制**（`FileUtils.processFilePath` 原样返回）；
+- **这前端主链路就是它**：`fileview-frontend/src/api/index.ts` 正常预览就是 `post('/localFile', {srcRelativePath})`。
+
+**攻击链（威胁模型内）**：已登录用户 A，构造 `POST /preview/api/localFile`，body 带 B 的私有 `/vol` 路径、
+**不带 Referer** → 闸门落到「未解析到路径（放行）」→ 引擎读该文件返回预览。
+
+**修复方案**（按稳健性，详见复核报告）：
+
+- **A（推荐，需真机先验）**：对 `/localFile`、`/netFile`、`/convert/api/srvFile`、`/password/unlock`
+  这几个「路径在 body」的接口，闸门**解析不到路径时拒绝**（fail-closed 而非 fail-open）。
+  正常流程一定有 Referer（上游未设 `referrerPolicy` / `Referrer-Policy`），且 Referer 的 query 里有路径。
+  **局限**：挡不住「用合法 Referer 掩护非法 body」。
+- **B（彻底）**：用 njs / OpenResty 在鉴权阶段读 body。复杂度显著上升。
+- **C**：飞牛开放 API —— 实测走不通，不作方案。
+- **D**：网关直接 deny 这几个 POST —— **不可行**（正常流程也是 POST，会打断预览）。
+
+**待验证**：端到端可利用性需真机确认 —— `fpk/tools/probe_post_bypass_e2e.py`（需 NAS 登录态）。
 
 ### ✅ 7. 静态资源不判定 —— 准确（设计如此）
 
@@ -110,7 +134,8 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 
 ### 待办（未做，按优先级）
 
-1. **POST body 路径判定**（审计 #6）：逐一枚举 POST 接口，确认来源页 `path` 能否代表目标文件。当前低优先级。
+1. 🔴 **POST body 路径判定**（审计 #6，**已升级为高危**）：见上面 §6。需先真机验证
+   （`probe_post_bypass_e2e.py`），再决定方案 A 还是 A+B。**这是当前最大的未修缺口。**
 2. **`acl` 容器挂载收敛**：当前挂宿主 `/etc/passwd`、`/etc/group`（只读）。可评估是否可以缩到只挂必要字段 / 用 nss-wrapper，减少信息暴露。收益有限，暂缓。
 3. **引擎镜像升级流程**：锁 digest 后升级要**同时改标签和 digest**。查 digest：
    ```bash

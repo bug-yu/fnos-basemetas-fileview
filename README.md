@@ -638,6 +638,13 @@ mode=enforce   →   mode=log      # 退回「只记录不拦截」
 
 ### 已知边界
 
+- 🔴 **POST body 里的路径判定不到（当前最大缺口）**。FileView 的正常预览主链路是
+  `POST /preview/api/localFile`（body 里的 `srcRelativePath`），而 nginx 的 `auth_request`
+  **看不到 body**，闸门只能从 query 串或 Referer 取路径。于是「不带 Referer 的 POST」
+  会让闸门落到「未解析到路径 → 放行」。**已源码级坐实可利用**（`fileview-backend` 开源：
+  `@SecurePath` 只挡 `..` 不挡绝对路径，到 `new File()` 之间无根目录限制）。详见
+  [`fpk/tools/POST-BYPASS-REVIEW.md`](fpk/tools/POST-BYPASS-REVIEW.md)。修复方案在做，
+  真机验证脚本：`fpk/tools/probe_post_bypass_e2e.py`。
 - `GET /preview/api/file?filePath=/opt/fileview/data/preview/<文件名>.pdf` 带的是**引擎内部转换产物**
   路径，回溯不出原文件。0.5.16 起会**退回用来源页 URL 里的原始 `path` 判定**，正常流程（浏览器从预览页
   发起）能被正确拦下；只有**手工构造、不带来源页**的请求才无法判定（此时 fail-open 放行）。
