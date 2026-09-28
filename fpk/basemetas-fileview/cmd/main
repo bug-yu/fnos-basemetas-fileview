@@ -61,9 +61,10 @@ case "$1" in
     fi
 
     # 兜底再建一次宿主侧挂载目录（fonts / data / logs）—— 上面 source 不到公共库时也要有。
+    # 权限 0700：引擎容器实测以 root 运行（uid=0），root 无视权限位，收紧不影响读写。
     if [ -n "${TRIM_PKGVAR:-}" ]; then
       mkdir -p "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
-      chmod 0777 "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
+      chmod 0700 "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
     else
       {
         echo "提示：环境变量 TRIM_PKGVAR 为空，自定义字体 / 引擎工作目录可能未按预期挂载。"

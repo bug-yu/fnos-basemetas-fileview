@@ -2,7 +2,11 @@ services:
 
   # 预览引擎本体
   fileview:
-    image: basemetas/fileview:1.5.2
+    # ⚠️ 锁到 digest（= 1.5.2 的镜像摘要），不要只写标签。
+    # 标签是**可移动的**：上游重新推同一个 1.5.2 时内容可能变，而镜像版本没变就等于
+    # 「本地拉到了别的东西，行为/漏洞面都不一样了」。锁 digest 后 docker 只认这一份内容，
+    # 完全可复现；将来要升级就同时改标签和 digest（查：docker buildx imagetools inspect）。
+    image: basemetas/fileview:1.5.2@sha256:ebcb1dc6d5fb90774db1867bdc0f8b952a0795c3d9e7b6550a6c31d8599f79ad
     container_name: basemetas-fileview-engine
     restart: unless-stopped
     volumes:

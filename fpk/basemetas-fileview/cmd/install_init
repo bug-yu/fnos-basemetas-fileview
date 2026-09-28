@@ -10,9 +10,10 @@
 # 框架会在 install_callback 之前就用 compose 把容器建好，所以这里先把目录备好。
 #
 # 不 source 公共库：这个时机安装包可能还没释放到 ${TRIM_APPDEST}，库读不到。
-# 权限给 0777：容器以什么用户跑都能写；这些只是引擎的临时产物和日志，不是用户数据。
+# 权限 0700：引擎容器实测以 root 运行（docker exec ... id → uid=0(root)），root 无视
+# 权限位，所以给 0700 不影响引擎读写；同时挡住本地其它非 root 用户。
 if [ -n "${TRIM_PKGVAR:-}" ]; then
   mkdir -p "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
-  chmod 0777 "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
+  chmod 0700 "$TRIM_PKGVAR/fonts" "$TRIM_PKGVAR/data" "$TRIM_PKGVAR/logs" 2>/dev/null
 fi
 exit 0

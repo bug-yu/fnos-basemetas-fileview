@@ -485,7 +485,7 @@ bash fv-uninstall-fix.sh
 > docker exec basemetas-fileview-engine sh -c 'du -sh /opt/fileview/data /opt/fileview/logs'
 > tail -f /vol1/@appdata/basemetas-fileview/logs/preview/fileview-preview.log
 > ```
-> 目录权限是 `0777`（引擎容器以什么用户跑都能写），内容只是临时产物和日志，不含用户文件。
+> 目录权限是 `0700`，只给 root。引擎容器**实测以 `uid=0(root)` 运行**（`docker exec basemetas-fileview-engine id`），root 无视权限位，所以不影响引擎读写；收紧是为了挡住本地其它非 root 用户 —— `data`/`logs` 里会出现**转换产物**（含被预览文件的内容片段）与日志，不是纯公开数据。
 
 ### PDF 工具栏 / Excel 缩放（两个「功能缺失」的真相）
 
@@ -541,11 +541,16 @@ showstatisticBarConfig: { count: false, view: false, zoom: true }
 
 ## 安全说明
 
+> 完整的威胁模型、第三方审计报告的逐条核对结论、以及待办清单，见 **[SECURITY.md](SECURITY.md)**。
+
 - ✅ 统一网关先校验登录态，未登录访问被挡在网关层；不对外暴露任何端口。
 - ✅ **按用户区分权限（0.5.17 起默认开启）**：飞牛统一网关会把当前登录用户放进 `X-Trim-Userid`，闸门容器据此**以该用户的身份**检查目标文件能否读取，没有读权限就返回 403。
   不需要任何设置。团队文件 / 共享文件按你在飞牛里设的权限正常放行；静态资源不参与判定。
   看判定过程：`docker logs basemetas-fileview-acl`；出现误拦时的应急开关见下面「按用户区分权限」一节。
+  **（0.5.25 起）静态资源判定更严**：只有「请求自己没带 `/vol` 路径」的静态资源请求才被直接放行，带 `?filePath=/vol…` 之类的后缀变体（如 `file.css?filePath=/vol1/x.docx`）一律落到正常权限判定，不再有后缀旁路。
 - ✅ 存储卷只读挂载，且仅限向导里填写的卷。
+- ✅ **引擎镜像锁到 digest（0.5.25 起）**：`basemetas/fileview:1.5.2@sha256:ebcb1dc6…`。标签是可移动的，上游重推同名标签时内容会变而版本号不变；锁 digest 后拉到的永远是同一份内容。
+- ✅ **数据目录权限 0700（0.5.25 起）**：`fonts` / `data` / `logs` 只给 root。引擎容器实测以 `uid=0(root)` 运行，不受影响；收紧是为了挡住本地其它非 root 用户（`data`/`logs` 里含转换产物与日志）。
 - ✅ **网络文件预览已关闭（0.5.22 起）**。本应用的入口只做本地路径预览，用不到引擎的「给一个 URL 让它去下载」能力。留着那条路等于开了一个 SSRF：任何能登录飞牛的人都能构造
   `/app/basemetas-fileview/preview/view?url=http://<内网地址>/...` 让引擎去抓内网资源渲染给他看，
   而且这条路径**绕过逐用户权限闸门**（闸门从 `path` / `filePath` 或来源页 query 里取路径，`url=` 请求里没有 `/vol` 路径，走的是「放行」分支）。

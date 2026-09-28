@@ -589,10 +589,15 @@ fv_ensure_mounts() {
 #
 # ⚠️ 必须**在容器创建之前**建好，否则 docker 会拿 root 身份把它们建成 0755，
 #    万一容器里的进程不是 root 就写不进去（表现为预览失败，且日志里看不出原因）。
-#    权限给 0777：容器以什么用户跑都能写，且这些只是引擎的临时产物和日志。
+#
+# 权限 0700：这三个目录只给 root。引擎容器**实测以 uid=0(root) 运行**
+# （docker exec basemetas-fileview-engine id → uid=0(root)），root 无视权限位，
+# 所以收紧到 0700 不影响引擎读写；同时把「任何本地非 root 用户 / 其它容器」挡在外面
+# —— data/logs 里会出现转换产物（含被预览文件的内容片段）与文件日志，不是纯公开数据。
+# 早先用 0777 是为了不假设容器用户；既然已实测是 root，就没有理由再开着全局可写。
 fv_prepare_dirs() {
   [ -n "${TRIM_PKGVAR:-}" ] || return 0
   mkdir -p "${TRIM_PKGVAR}/fonts" "${TRIM_PKGVAR}/data" "${TRIM_PKGVAR}/logs" 2>/dev/null
-  chmod 0777 "${TRIM_PKGVAR}/fonts" "${TRIM_PKGVAR}/data" "${TRIM_PKGVAR}/logs" 2>/dev/null
+  chmod 0700 "${TRIM_PKGVAR}/fonts" "${TRIM_PKGVAR}/data" "${TRIM_PKGVAR}/logs" 2>/dev/null
   return 0
 }

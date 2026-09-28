@@ -1,8 +1,4 @@
 {
-  "api-scope": [
-    "trim.file.sharedAccess",
-    "trim.file.userAcl"
-  ],
   "docker-project": {
     "projects": [
       {

@@ -186,7 +186,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def _decide(self, uid, uri, ref):
         """返回 (是否放行, 原因, 判定用的路径)"""
-        if uri.split("?", 1)[0].lower().endswith(self.SKIP_EXT):
+        # ⚠️ 扩展名短路必须**放在取到路径之后、且只在请求自己没带存储卷路径时**生效。
+        #
+        # 原写法只看 URI 后缀就放行，等于开了一条旁路：
+        #   /preview/api/file.css?filePath=/vol1/私密.docx
+        # 后缀是 .css → 直接「静态资源（放行）」，filePath 里的 /vol 路径完全没被判定。
+        # 这不是想当然：实测该 URL 返回的是 **500 而不是 404**，说明它确实**被路由到了**
+        # 后端接口（若未匹配到任何 location 会是 404），只是 filePath 被当成 .css 去读才报错。
+        # 也就是说「换个后缀」并不能真正躲开封禁接口 —— 但闸门的这道放行是真的开了。
+        #
+        # 现在的要求：静态资源请求自己**不能**携带 /vol 路径；带了就照常做权限判定。
+        # 正常的静态资源请求（/preview/static/xxx.css）不带路径参数，行为完全不变。
+        own = None
+        for h in ("X-Acl-Path", "X-Acl-File"):
+            v = self._decode((self.headers.get(h) or "").strip())
+            if v:
+                own = v
+                break
+        if not own:
+            own = self._from_qs(uri.split("?", 1)[1] if "?" in uri else "")
+
+        if not (own and own.startswith("/vol")) \
+           and uri.split("?", 1)[0].lower().endswith(self.SKIP_EXT):
             return True, "静态资源（放行）", None
 
         # 目标路径：优先用请求自带的；**若不是存储卷路径，就退回来源页的**。
@@ -198,14 +219,6 @@ class Handler(BaseHTTPRequestHandler):
         #      → 带的是**引擎内部转换产物**路径，回溯不出原文件；
         #        但来源页 URL 里有原始 path，退回去用它判定，
         #        否则「知道转换后文件名就能直接取走」是个真实旁路
-        own = None
-        for h in ("X-Acl-Path", "X-Acl-File"):
-            v = self._decode((self.headers.get(h) or "").strip())
-            if v:
-                own = v
-                break
-        if not own:
-            own = self._from_qs(uri.split("?", 1)[1] if "?" in uri else "")
         ref_path = self._from_qs(ref.split("?", 1)[1] if "?" in ref else "")
 
         path = own

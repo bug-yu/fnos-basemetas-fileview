@@ -68,6 +68,27 @@ export TRIM_APPDEST="$T/@appcenter/basemetas-fileview"
 export TRIM_PKGVAR="$T/@appdata/basemetas-fileview"
 mkdir -p "$TRIM_APPDEST/docker" "$TRIM_PKGVAR"
 cp "$BASE/app/docker/docker-compose.yaml" "$TRIM_APPDEST/docker/docker-compose.yaml"
+
+# ── docker 打桩 ─────────────────────────────────────────────────────────────
+# 本自检只验「文件层面的逻辑」（改写挂载段、写 .env、幂等、状态持久化），
+# **不需要真的碰 docker**；而 fv_ensure_mounts / fv_rebuild 里有 `docker inspect`
+# 之类的调用，在没有 daemon 的机器上会卡住不返回。把 docker 换成一个立刻返回失败的
+# 空壳：`command -v docker` 仍为真（走正常分支），但所有 `docker ps/inspect` 都失败
+# → 函数按「容器不可用」提前 return，逻辑照验不误。
+#
+# ⚠️ Git Bash 的 mktemp -d 会返回带反斜杠的 Windows 路径（\Users\…），
+#    直接拼 "$T/bin" 会得到一个非法路径。这里统一转成 /c/… 形式再用。
+if command -v cygpath >/dev/null 2>&1; then T="$(cygpath -u "$T" 2>/dev/null || printf '%s' "$T")"; fi
+mkdir -p "$T/bin"
+cat > "$T/bin/docker" <<'SHIM'
+#!/bin/sh
+# 自检用空壳：一律失败，且瞬间返回，绝不连接任何 socket
+exit 1
+SHIM
+chmod +x "$T/bin/docker" 2>/dev/null
+PATH="$T/bin:$PATH"
+export PATH
+
 . "$BASE/app/docker/fv-volumes.sh"
 
 fv_prepare_dirs
@@ -92,6 +113,44 @@ if awk '/## VOLUMES_BEGIN/,/## VOLUMES_END/' "$BASE/app/docker/docker-compose.ya
   echo "   ❌ data/logs 挂载落在 VOLUMES 标记块内，会被重写冲掉"; FAILED=1
 else
   echo "   ✅ 挂载在标记块之外（升级重写不会冲掉）"
+fi
+
+echo
+echo "-- 安全收紧断言（0.5.25）--"
+# 引擎镜像必须锁 digest：只写标签时上游重推同名标签会静默换内容
+if grep -qE '^ *image: basemetas/fileview:1\.5\.2@sha256:[0-9a-f]{64}$' "$BASE/app/docker/docker-compose.yaml"; then
+  echo "   ✅ 引擎镜像已锁 digest"
+else
+  echo "   ❌ 引擎镜像未锁 digest（只写标签会被上游重推换内容）"; FAILED=1
+fi
+# 目录权限不得再出现 0777
+if grep -rn 'chmod 0777' "$BASE/cmd" "$BASE/app" >/dev/null 2>&1; then
+  echo "   ❌ 仍有 chmod 0777（应统一为 0700）"; FAILED=1
+else
+  echo "   ✅ 目录权限已统一为 0700"
+fi
+# 扩展名短路必须带 /vol 保护，不能回到「只看后缀就放行」
+if grep -q 'own and own.startswith("/vol")' "$BASE/app/docker/fv-acl-gate.py"; then
+  echo "   ✅ 闸门扩展名短路已带 /vol 保护"
+else
+  echo "   ❌ 闸门扩展名短路缺少 /vol 保护（旁路风险）"; FAILED=1
+fi
+# api-scope 声明应已删除（未使用）
+if grep -q 'api-scope' "$BASE/config/resource" 2>/dev/null; then
+  echo "   ❌ config/resource 仍声明未使用的 api-scope"; FAILED=1
+else
+  echo "   ✅ 未使用的 api-scope 声明已删除"
+fi
+# 闸门判定矩阵单测
+if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
+  PY="$(command -v python3 || command -v python)"
+  if "$PY" "$(dirname "$0")/test_acl_decide.py" >/dev/null 2>&1; then
+    echo "   ✅ 闸门判定矩阵单测通过"
+  else
+    echo "   ❌ 闸门判定矩阵单测失败（跑 $(dirname "$0")/test_acl_decide.py 看详情）"; FAILED=1
+  fi
+else
+  echo "   ⚠️  本机没有 python，跳过闸门判定矩阵单测"
 fi
 
 fv_sync_volumes "/vol1,/vol3" >/dev/null
