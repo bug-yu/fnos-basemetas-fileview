@@ -328,9 +328,9 @@ bash tools/fv-docker-imageaudit.sh
 
 | 情况 | 处理 |
 |---|---|
-| 坏记录**没有名字**、也没有容器引用 | `docker image prune -f` 清掉即可 |
+| 坏记录**没有名字**、也没有容器引用 | **不影响任何应用**，可以先不管；想清干净见下面「清理孤儿坏记录」 |
 | 坏记录**被某个容器引用** | 那个容器重建时会失败 —— 先给它换个能用的镜像（`docker tag` 顶上，或改它的 image），再重建 |
-| 想一次性消除所有隐患 | 重建镜像存储，见下 |
+| 想一次性消除所有隐患 | 先按上面「清理孤儿坏记录」来；只有连它都清不掉时才重建镜像存储（见最后一节） |
 
 **「换名字」的具体做法**（2026-09-28 实测就是用这个解封的）—— 拿一个能跑的同类镜像顶掉坏名字：
 
@@ -359,6 +359,51 @@ journalctl -u docker --no-pager -n 100 | grep -E 'not restoring image|layer does
 docker pull alpine:latest && docker run --rm alpine:latest echo ok
 docker rmi alpine:latest && docker pull alpine:latest     # 再来一遍，确认可重复
 ```
+
+#### 清理「孤儿」坏记录（可选 —— 不影响任何应用）
+
+如果审计结果是**无名字、且没有容器引用**的坏记录（典型来源：断电时拉了一半的镜像，之后名字又被 `docker tag` 顶掉了），那它们**不影响任何应用**，只是：
+
+- 每次启动在日志里打两行 `not restoring image`
+- `docker image prune -f` 清不掉（会回 `Total reclaimed space: 0B` —— prune 需要先加载记录才能删，而加载就失败）
+- 隐患：**以后你再用到那个镜像名，还会撞上同一面墙**
+
+想清掉的话，按下面来（**第 1 步是安全检查，有输出就别删**）：
+
+```bash
+# 0. 从 daemon 日志里拿到两个东西：坏记录的 imageID、和它对应的链顶 chainID
+journalctl -u docker --no-pager -n 200 | grep -E 'not restoring image'
+#   → chainID=sha256:xxxx… 就是链顶
+bash tools/fv-docker-imageaudit.sh    # → 会列出坏记录的 imageID
+
+# 1. ⚠️ 安全检查：链顶有没有被别的层当作 parent 引用？
+grep -rl "<链顶chainID>" /vol1/docker/image/overlay2/layerdb/sha256/*/parent 2>/dev/null
+#   无输出 → 安全（它是某条链的顶端，删掉不影响别的镜像）
+#   有输出 → 它被别的镜像依赖，**不要删**，改用「换名字」的办法绕过
+
+# 2. 备份镜像元数据（只是元数据，很小）
+systemctl stop docker
+tar czf /vol1/docker-image-meta-$(date +%Y%m%d%H%M).tar.gz -C /vol1/docker image
+
+# 3. 删掉镜像记录 + 链顶条目（只删链顶，父层保留 —— 父层可能被别的镜像共用）
+for id in <坏记录的 imageID…>; do
+  rm -rf "/vol1/docker/image/overlay2/imagedb/content/sha256/$id"
+  rm -rf "/vol1/docker/image/overlay2/imagedb/metadata/sha256/$id"
+done
+for c in <链顶 chainID…>; do
+  rm -rf "/vol1/docker/image/overlay2/layerdb/sha256/$c"
+done
+
+# 4. 起 docker 验证
+systemctl start docker
+journalctl -u docker --no-pager -n 60 | grep 'not restoring image' || echo "✅ 干净了"
+
+# 5. 顺带验一下「全新的 alpine 基底镜像能不能正常拉+跑」（不碰你在用的镜像名）
+docker pull python:3.12-alpine && docker run --rm python:3.12-alpine python3 -V
+```
+
+> 删掉之后，对应的 `overlay2/<cache-id>` 层数据目录会变成无人引用的垃圾（占空间）。
+> **确认一切正常、且相关应用都没问题之后**再考虑清理它们；不确认就先留着，只是占点空间。
 
 #### 最后的办法：重建镜像存储
 
