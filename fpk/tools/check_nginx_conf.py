@@ -39,6 +39,8 @@ KNOWN_PREFIXES = (
     "auth_basic", "ssl_certificate", "umask", "pid", "user", "error_page",
     # 逐用户权限闸门用到（见 app/docker/fv-acl-gate.py）
     "auth_request", "internal", "proxy_pass_request_body", "proxy_method",
+    # 静态补丁文件 fv-web-patch.js 用 alias 指到挂进来的 conf.d 目录
+    "alias",
 )
 
 

@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.23
+version=0.5.24
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题 —— 上游把触屏电脑误判成 iPad，导致旋转 / 双页 / 全屏 / 搜索 / 缩放全部被隐藏（现在按设备区分：电脑恢复桌面工具栏，平板手机保持移动端布局）。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。0.5.21：修复卸载容错脚本的 CRLF 行尾。0.5.20：放开单文件预览大小上限，默认 1 GB。0.5.19：去掉应用设置里没意义的「访问权限」标签页。
+changelog=0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。0.5.21：修复卸载容错脚本的 CRLF 行尾。0.5.20：放开单文件预览大小上限，默认 1 GB。
 
 ctl_stop=true
 checkport=false

@@ -492,7 +492,7 @@ bash fv-uninstall-fix.sh
 | 现象 | 真相 |
 |---|---|
 | **PDF 预览没有工具栏**（不能旋转、双页、全屏、搜索，也没有浮动缩放） | 上游 `utils/device.ts` 把**带触摸的电脑**误判成 iPad —— `isPadFun()` 最后一行兜底是「屏幕短边 ≥ 600 就算 Pad」，触屏笔记本 / 接了触屏显示器的台式机正好一路走到那里。于是 `isMobile = true`，而工具栏每个按钮和浮动缩放控件都写着 `!isMobile`，全被隐藏。**0.5.23 已修** |
-| **Excel 不能缩放** | 上游**故意**隐藏了 Luckysheet 的工具栏（`showtoolbar: false`，配套还藏了信息栏、公式栏、统计栏），是一套「只读预览」的设计 —— 缩放控件就在被隐藏的工具栏里。**本包不改动**这一点 |
+| **Excel 不能缩放** | 上游给 `luckysheet.create` 传了 `showstatisticBar: false`，把统计栏整条藏了 —— 而缩放滑杆就在统计栏里。**0.5.24 已修**（补上 Luckysheet 自带的细粒度开关，只放出「缩放」这一项，求和/视图仍隐藏） |
 
 **先确认是不是那个原因**：打开
 
@@ -518,6 +518,26 @@ bash fv-uninstall-fix.sh
 > 上游修好 `device.ts` 之后应该把整段删掉。升级引擎镜像后补丁可能失效 ——
 > **表现是工具栏又没了，不会报错**，用上面那个 debug 页一看就知道。
 > 想手动关掉：注释掉那个 location 即可（不影响旁边 JS 改写那个 location）。
+
+**0.5.24 的 Excel 缩放补丁怎么工作**：Luckysheet 本身支持**细粒度**开关
+`showstatisticBarConfig`，而上游没传它。补丁在浏览器端包了一层 `luckysheet.create`，补上：
+
+```js
+showstatisticBar: true,
+showstatisticBarConfig: { count: false, view: false, zoom: true }
+```
+
+结果：底部只出现缩放滑杆，求和（`count`）与视图（`view`）保持隐藏。Luckysheet 的逻辑是
+「三个子项全关才把统计栏整条藏掉」，我们留了 `zoom`，所以它还会正确计算
+`statisticBarHeight`，表格不会错位。
+
+实现在 `app/docker/fv-web-patch.js`，由上面那个 location 以 `<script src>` 注入。
+用的是「拦截 `window.luckysheet` 赋值」而不是轮询 —— luckysheet 是动态 `loadJS` 加载的，
+加载完紧接着就调 `create`，轮询来不及。
+
+> **怎么确认补丁还活着**：打开浏览器控制台，应该看到两行 `[fv-patch]` 开头的日志
+> （`loaded` 和 `luckysheet.create 已包装`）。没有就说明补丁失效了（多半是引擎镜像升级后路径变了）。
+> 想手动关掉：注释掉 `__fv-patch.js` 那个 location，或把注入里的 `<script src=...>` 去掉。
 
 ## 安全说明
 
@@ -691,7 +711,7 @@ build.bat
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.23`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.24`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -706,6 +726,7 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.24** | Excel / CSV 恢复缩放控件（上游把 Luckysheet 统计栏整条藏了，缩放滑杆就在里面） |
 | **0.5.23** | 修带触摸的电脑上 PDF 没有工具栏（上游把触屏电脑误判成 iPad）；Excel 不能缩放是上游设计，未改动 |
 | **0.5.22** | 挂出引擎的工作目录与日志（此前落在容器可写层，升级就丢）；关掉网络文件预览（SSRF 入口，且绕过权限闸门） |
 | **0.5.21** | 修 `cmd/uninstall_*` 的 CRLF 行尾（此前以 CRLF 打进包，卸载清理动作静默失效）；新增打包前行尾强制检查 |
