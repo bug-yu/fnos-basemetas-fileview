@@ -23,6 +23,7 @@
 | `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
 | `tools/fv-docker-doctor.sh` | NAS 上一键**诊断 Docker 侧**问题（安装报 `layer does not exist` / 拉不动镜像时用，只读） |
 | `tools/fv-docker-layerdb.sh` | 检查 / 清理 Docker 镜像元数据（layerdb）里的残留条目（`layer does not exist` 的第二步处理；`--fix` 前会自动备份） |
+| `tools/fv-docker-imageaudit.sh` | 审计 Docker 镜像记录健康度：坏记录有几条、对应哪些镜像名、**哪些容器引用了它们**（= 重启会起不来的应用），只读 |
 | `CHANGELOG.md` | 版本更新说明 |
 
 > `.fpk` 里装的是「怎么跑」而不是「跑什么」：预览引擎镜像 `basemetas/fileview:1.5.2`（约 863 MB）在**安装时**从 Docker Hub 拉取，不在包内。这也是飞牛官方 Docker 应用的标准形态。
@@ -251,7 +252,7 @@ level=error msg="Handler for GET /v1.51/images/nginx:alpine/json returned error:
 | ① daemon 自己的索引状态不一致（**断电 / 异常重启后最常见**） | 跑第二步的扫描，**残留 0 条** | 干净地停一次再起（第二步） |
 | ② layerdb 里真有残留条目 | 扫描报出残留条数 > 0 | 用脚本 `--fix` 清掉（第三步） |
 
-#### 第二步：先试「干净地停一次再起」—— 实测这一步就够了
+#### 第二步：先试「干净地停一次再起」
 
 > ⚠️ 是 `stop` + `start`，**不是 `restart`**。
 > 实测（2026-09-28，断电后）：`systemctl restart docker` 试了两次都没修好，日志里还留着一堆
@@ -259,17 +260,21 @@ level=error msg="Handler for GET /v1.51/images/nginx:alpine/json returned error:
 > docker.service: Unit process 72220 (docker-proxy) remains running after unit stopped.
 > docker.service: Found left-over process … This usually indicates unclean termination of a previous run
 > ```
-> 而一次干净的 `stop`（等它真的停完）→ `start` 之后，`docker pull nginx:alpine` 直接回
-> **`Image is up to date`** —— 镜像本来就在，只是 daemon 认不出来。
+> 一次干净的 `stop`（等它真的停完）→ `start` 之后，`docker pull nginx:alpine` 会回
+> **`Image is up to date`** —— 但注意：**这只说明层数据在，不代表镜像记录是好的**
+> （实测那次 pull 回 `up to date`，`docker image inspect nginx:alpine` 依然失败）。
 
 ```bash
 systemctl stop docker
 pgrep -a docker-proxy          # 应该没有输出；有就再等一会儿
 systemctl start docker
-docker pull nginx:alpine       # 现在应该就好了
+docker image inspect nginx:alpine >/dev/null 2>&1 && echo "✅ 好了" || echo "❌ 记录还是坏的"
 ```
 
-#### 第三步：还不行，才查 layerdb 残留
+`❌` 就往下走 —— 那次实测的最终解是**给这两个名字换上一个能用的镜像**（见下面「根治」一节），
+而不是继续折腾 daemon。
+
+#### 第三步：查 layerdb 残留
 
 ```bash
 bash tools/fv-docker-layerdb.sh          # 只读：报告残留条数（docker 跑着也能用）
@@ -308,6 +313,74 @@ docker ps -a --format '{{.Names}}\t{{.Status}}'                   # 其它应用
 报错点名哪个就处理哪个。**不要**拿机器上已有的 `nginx:latest` 来替换 `alpine` —— 两者基底不同（Debian 162MB vs musl ~40MB），而且会让本应用多一层对别人镜像的依赖。
 
 > 三个镜像都能 `docker pull` 成功之后，回应用中心重装即可。
+
+#### 根治：先审计影响面，再决定动到哪一层
+
+`layer does not exist` 处理完之后，**别的应用可能还有同样的坏记录** —— 它们现在跑着，是因为已经挂载好了，**重启时才会暴露**。所以先只读审计一遍：
+
+```bash
+bash tools/fv-docker-imageaudit.sh
+```
+
+它会直接列出：坏掉的镜像记录有几条、分别对应哪些镜像名、**哪些容器引用了它们**（也就是重启后会起不来的应用）。
+
+按结果分三种处理：
+
+| 情况 | 处理 |
+|---|---|
+| 坏记录**没有名字**、也没有容器引用 | `docker image prune -f` 清掉即可 |
+| 坏记录**被某个容器引用** | 那个容器重建时会失败 —— 先给它换个能用的镜像（`docker tag` 顶上，或改它的 image），再重建 |
+| 想一次性消除所有隐患 | 重建镜像存储，见下 |
+
+**「换名字」的具体做法**（2026-09-28 实测就是用这个解封的）—— 拿一个能跑的同类镜像顶掉坏名字：
+
+```bash
+# 找一个能用的同类镜像（inspect 成功的）
+docker images | grep -iE 'nginx|python'
+
+docker tag <能用的镜像> <坏掉的名字>          # 例：docker tag nginx:latest nginx:alpine
+# 若 tag 报 layer does not exist，先把坏名字摘掉再 tag：
+#   docker rmi -f nginx:alpine && docker tag nginx:latest nginx:alpine
+
+# 验证名字现在能用了
+docker image inspect <坏掉的名字> >/dev/null 2>&1 && echo "✅" || echo "❌"
+```
+
+compose 发现镜像在本地就不会去 pull，也就不会撞上那条坏记录。
+
+**验证修好了没有**：
+
+```bash
+systemctl stop docker && systemctl start docker
+journalctl -u docker --no-pager -n 100 | grep -E 'not restoring image|layer does not exist'
+# 应该没有输出
+
+# 再验一次「新拉一个 alpine 基底的镜像能不能用」—— 这是本问题的核心机制
+docker pull alpine:latest && docker run --rm alpine:latest echo ok
+docker rmi alpine:latest && docker pull alpine:latest     # 再来一遍，确认可重复
+```
+
+#### 最后的办法：重建镜像存储
+
+坏记录清不掉、或者想一次性消除隐患时才用：
+
+```bash
+# ⚠️ 代价：所有应用都要重新拉镜像。动手前先留好清单
+docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>' | sort -u > /vol1/image-list.txt
+docker ps -a --format '{{.Names}}\t{{.Image}}' > /vol1/container-images.txt
+
+systemctl stop docker
+# 停 docker 后所有容器已停止，此时移动 overlay2 才是安全的
+mv /vol1/docker/image    /vol1/docker/image.broken.$(date +%s)
+mv /vol1/docker/overlay2 /vol1/docker/overlay2.broken.$(date +%s)
+systemctl start docker
+
+# 然后按 image-list.txt 逐个 docker pull，再逐个 docker start 容器
+```
+
+- **卷数据（`/vol1/docker/volumes`）和容器定义（`/vol1/docker/containers`）都不动**，各应用的数据不会丢。
+- 真正的风险是**镜像拉不回来**：有几个镜像来自 `ghcr.nju.edu.cn`、`registry.fnnas.com`、`registry.cn-hangzhou.aliyuncs.com` 这类源，若其中某个不可用，对应应用就起不来。**所以动手前先把 `image-list.txt` 存好，并确认这些源可达。**
+- 一切正常后，那两个 `.broken.*` 目录可以删掉腾空间。
 
 ### 卸载失败（`Request failed`）
 
