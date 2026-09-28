@@ -17,6 +17,15 @@ say() { echo; echo "== $* =="; }
 say "0. 环境"
 echo "  主机: $(hostname 2>/dev/null)   内核: $(uname -r 2>/dev/null)"
 echo "  docker: $(docker version --format '{{.Server.Version}}' 2>/dev/null || echo '取不到')"
+# 残留的 docker-proxy 说明上次停得不干净 —— 这种情况下 restart 往往修不好问题，
+# 要用 stop（等它真停完）+ start。见 README「安装报 layer does not exist」。
+leftover="$(pgrep -a docker-proxy 2>/dev/null | wc -l)"
+if [ "$leftover" -gt 0 ]; then
+  echo "  ⚠️ 有 $leftover 个残留的 docker-proxy 进程（上次停得不干净）"
+  echo "     → 处理：systemctl stop docker; 等 pgrep -a docker-proxy 无输出; systemctl start docker"
+else
+  echo "  ✅ 没有残留的 docker-proxy 进程"
+fi
 
 say "1. Docker 数据根所在的盘（最可疑的一项）"
 ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
