@@ -386,6 +386,14 @@ systemctl stop docker
 tar czf /vol1/docker-image-meta-$(date +%Y%m%d%H%M).tar.gz -C /vol1/docker image
 
 # 3. 删掉镜像记录 + 链顶条目（只删链顶，父层保留 —— 父层可能被别的镜像共用）
+#
+#    实测（2026-09-28）：**只删 layerdb 的链顶条目就已经让 not restoring image 消失了**，
+#    imagedb 那两条记录删不删都行。想彻底清干净就两条一起删；嫌麻烦只做 layerdb 那步也可以。
+#
+#    ⚠️ 粘贴多行命令时小心终端把行弄乱 —— 实测踩过：`for id in <长ID1> \<换行><长ID2>; do`
+#       被拼成一行后，循环体里的 rm 变成了循环列表的一部分，**一条都没删成**
+#       （好在那些拼接出来的路径都不存在，没有误删）。粘完先 `history` 或回显确认一下。
+
 for id in <坏记录的 imageID…>; do
   rm -rf "/vol1/docker/image/overlay2/imagedb/content/sha256/$id"
   rm -rf "/vol1/docker/image/overlay2/imagedb/metadata/sha256/$id"
@@ -395,8 +403,11 @@ for c in <链顶 chainID…>; do
 done
 
 # 4. 起 docker 验证
+#    ⚠️ 别用 `journalctl -n 60 | grep` —— dockerd 启动时会打很多行，
+#       错误在开头，被 -n 截掉就误判成「好了」。要用计数或时间过滤：
 systemctl start docker
-journalctl -u docker --no-pager -n 60 | grep 'not restoring image' || echo "✅ 干净了"
+journalctl -u docker --no-pager | grep -c 'not restoring image'          # 看总次数有没有增加
+journalctl -u docker --no-pager | grep 'not restoring image' | tail -2   # 最近一次是什么时候
 
 # 5. 顺带验一下「全新的 alpine 基底镜像能不能正常拉+跑」（不碰你在用的镜像名）
 docker pull python:3.12-alpine && docker run --rm python:3.12-alpine python3 -V
