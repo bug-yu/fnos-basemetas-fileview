@@ -105,15 +105,54 @@ echo "  共 $total 条，其中残留 **$stale_n** 条"
 echo
 
 # ---------------------------------------------------------------------------
-# 2. 交叉核对：dockerd 日志里那几条 chainID
+# 2. 交叉核对：dockerd 日志里那几条 chainID 到底缺什么
 # ---------------------------------------------------------------------------
-echo "== dockerd 日志里的 chainID（最近 500 行）=="
+# 这一步是重点 —— 它直接回答「daemon 说 layer does not exist，到底是哪一层缺了」。
+echo "== dockerd 日志里的 chainID 逐条核对（最近 800 行）=="
+LOGS=""
 if command -v journalctl >/dev/null 2>&1; then
-  journalctl -u docker --no-pager -n 500 2>/dev/null \
-    | grep -oE 'chainID="sha256:[0-9a-f]{64}"' | sort -u | sed 's/^/  /' \
-    || echo "  （没有）"
+  LOGS="$(journalctl -u docker --no-pager -n 800 2>/dev/null)"
+fi
+
+# 2a. 顺带把「点名了哪个镜像」的错误行打出来
+named="$(printf '%s\n' "$LOGS" | grep -oE 'images/[^/]+/json returned error: [^"]*' | sort -u)"
+if [ -n "$named" ]; then
+  echo "  --- 日志里点名失败的镜像 ---"
+  printf '%s\n' "$named" | sed 's/^/    /'
+fi
+
+ids="$(printf '%s\n' "$LOGS" | grep -oE 'chainID="sha256:[0-9a-f]{64}"' \
+       | sed 's/.*sha256://; s/"$//' | sort -u)"
+if [ -z "$ids" ]; then
+  echo "  （日志里没抓到 chainID）"
+  echo "  若确实报过 layer does not exist，把这条的输出发出来："
+  echo "    journalctl -u docker --no-pager | grep -E 'layer does not exist' | tail -20"
 else
-  echo "  （没有 journalctl）"
+  for id in $ids; do
+    d="$LAYERDB/$id"
+    echo "  chainID=$id"
+    if [ ! -d "$d" ]; then
+      echo "     ❌ layerdb 里**没有**这个条目 —— 这就是原因"
+      continue
+    fi
+    cid="$(cat "$d/cache-id" 2>/dev/null)"
+    par="$(cat "$d/parent" 2>/dev/null)"
+    echo "     cache-id=${cid:-（无）}"
+    echo "     parent  =${par:-（无）}"
+    if [ -z "$cid" ]; then
+      echo "     ❌ 缺 cache-id"
+    elif [ ! -d "$OVERLAY/$cid" ]; then
+      echo "     ❌ 层数据目录不存在：$OVERLAY/$cid"
+    else
+      echo "     ✅ 层目录在：$OVERLAY/$cid"
+      for f in diff link; do
+        if [ -e "$OVERLAY/$cid/$f" ]; then echo "        ✅ $f"; else echo "        ❌ 缺 $f"; fi
+      done
+    fi
+    if [ -n "$par" ] && [ ! -d "$LAYERDB/$par" ]; then
+      echo "     ❌ 父层条目不存在：$par"
+    fi
+  done
 fi
 echo
 
