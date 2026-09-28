@@ -22,6 +22,7 @@
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
 | `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
 | `tools/fv-docker-doctor.sh` | NAS 上一键**诊断 Docker 侧**问题（安装报 `layer does not exist` / 拉不动镜像时用，只读） |
+| `tools/fv-docker-layerdb.sh` | 清掉 Docker 镜像元数据里「层数据已丢失」的残留条目（安装报 `layer does not exist` 的真解，`--fix` 前会先备份） |
 | `CHANGELOG.md` | 版本更新说明 |
 
 > `.fpk` 里装的是「怎么跑」而不是「跑什么」：预览引擎镜像 `basemetas/fileview:1.5.2`（约 863 MB）在**安装时**从 Docker Hub 拉取，不在包内。这也是飞牛官方 Docker 应用的标准形态。
@@ -216,93 +217,73 @@ bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带实测某个具体
 
 ### 安装报 `layer does not exist`
 
-安装时弹出：
+安装时弹出（两种写法都会遇到）：
 
 ```
-gateway Pulling
-acl Pulling
-fileview Pulling
-acl Pulled
+gateway Pulling / acl Pulling / fileview Pulling / acl Pulled
 Error response from daemon: layer does not exist
 ```
-
-这是 **Docker daemon 的镜像层问题，与本应用无关**：报错发生在 `docker pull` 阶段，比安装包里的任何脚本都早；本应用只做容器级操作（`docker rm -f`、`compose down`），**从不 `rmi` / `prune`**，卸载也不会删镜像。
-
-先跑只读诊断，它会指出到底是磁盘、悬挂层还是层库损坏：
-
-```bash
-bash tools/fv-docker-doctor.sh
+```
+unable to get image 'nginx:alpine': Error response from daemon: layer does not exist
 ```
 
-**报错里点了名的那个镜像，就是本地状态坏掉的那个。** 两种写法都要留意：
+这是 **Docker daemon 的镜像元数据（layerdb）坏了，与本应用无关**：报错发生在 `docker pull` 阶段，比安装包里的任何脚本都早；本应用只做容器级操作（`docker rm -f`、`compose down`），**从不 `rmi` / `prune`**，卸载也不会删镜像。
 
-| 报错 | 含义 |
-|---|---|
-| `Error response from daemon: layer does not exist`（在 `Pulling` 列表之后） | 拉取过程中撞上了坏的本地层 |
-| `unable to get image 'nginx:alpine': Error response from daemon: layer does not exist` | **明确就是 `nginx:alpine` 出了问题** —— 直接重拉它，见下面第 3 步 |
-
-> ⚠️ **别看到报错就去 `docker rmi`**。实测踩过：这个镜像本地**根本不存在**，
-> `docker rmi -f nginx:alpine` 只会回一句 `No such image`（这不是新问题，是正常的），
-> 而**直接 `docker pull nginx:alpine` 就成功了**。
-> `layer does not exist` 发生在「下载 → 落盘」环节，说明的是内容库写坏了，
-> 不是「有个残缺镜像等你删」。**先重拉，重拉失败再考虑删。**
-
-三个镜像各自的作用，方便判断影响面：`nginx:alpine` 是网关、`python:3-alpine` 是权限闸门、`basemetas/fileview:1.5.2` 是引擎。报错点名哪个就处理哪个，不用动其它的。
-
-> 顺带一提：如果你机器上已经有别的应用拉的 `nginx:latest`，**不要拿它来替换 `alpine`** —— 两者基底不同（Debian 162MB vs musl ~40MB），而且会让本应用多一层对别人镜像的依赖。compose 里声明 `nginx:alpine` 是自洽的，缺了它会自己拉。
-
-最常见的三种成因：
-
-| 成因 | 判据（看诊断的哪一节） |
-|---|---|
-| Docker 数据根所在分区**写满或 inode 用尽** → 层解压中断，留下残缺引用 | 第 1 节 `df -h` / `df -i` |
-| 某次 pull 被中断（断电、重启、磁盘满）→ 内容库留下悬挂引用 | 第 4 节有 `<none>` 无标签镜像 |
-| overlay2 层库损坏 | 第 6 节 daemon 日志 |
-
-**修法（由轻到重，先试前面的）**：
-
-> 💡 **如果是断电 / 异常重启之后出现的，直接从第 4 步（重启 daemon）开始。**
-> Docker 启动时会用 `overlay2` 目录里的实际内容重建层索引，断电造成的悬挂引用
-> 往往这一次重启就自愈了，比反复拉镜像省事。
+#### 第一步：看 dockerd 日志定性
 
 ```bash
-# 1. 直接重试安装（若是瞬时问题，这一步就好了）
-
-# 2. 手工重拉，看能否复现、报什么
-docker pull nginx:alpine
-docker pull basemetas/fileview:1.5.2
-
-# 3. 报同样的错 / 报错里点名了某个镜像 → 直接重拉那个镜像
-#    （rmi 报 No such image 是正常的：它本地可能压根不存在，问题在「下载→落盘」）
-docker pull nginx:alpine
-
-# 3b. 重拉也不行，才考虑清掉它再拉
-docker rmi -f nginx:alpine && docker pull nginx:alpine
-
-# 4. 还不行 / 断电之后 → 重启 daemon，让它重建内容库索引
-systemctl restart docker
-docker images && docker ps -a        # 看看恢复成什么样
-docker pull nginx:alpine && docker pull basemetas/fileview:1.5.2
-
-# 5. 还不行 → 清掉无标签的悬挂层（相对安全）
-docker image prune -f
+journalctl -u docker --no-pager -n 200 | grep -E 'not restoring image|layer does not exist'
 ```
 
-**断电之后还应该顺手看一眼这两样**（不只是 Docker 的事）：
+看到这种，就是本文要处理的情况：
 
-```bash
-# 文件系统有没有被写坏 —— 有 I/O error / btrfs 报错就别再折腾 Docker，先处理存储
-dmesg | grep -iE 'I/O error|btrfs|ext4|xfs|corrupt' | tail -30
-
-# 其它应用有没有被牵连
-docker ps -a --format '{{.Names}}\t{{.Status}}'
+```
+level=error msg="not restoring image" chainID="sha256:xxxx…" err="layer does not exist"
+level=error msg="Handler for GET /v1.51/images/nginx:alpine/json returned error: layer does not exist"
 ```
 
-> ⚠️ **不要一上来就 `docker system prune -a`**：它会删掉**所有未被容器使用的镜像**，包括你 NAS 上其它应用的 —— 那些应用下次启动会重新拉一遍，离线或镜像源不通时直接起不来。只有确认磁盘满了、且愿意承担这个代价时再用。
+**含义**：镜像的 layerdb 记录还在，但它指向的层数据（`overlay2/<cache-id>`）已经没了。
+
+> ⚠️ **这种情况重拉是永远不可能成功的。** 镜像的 chainID 由**内容**算出，同样的内容算出同样的 ID，拉下来注册时又撞上那条坏记录 → 又报 `layer does not exist`。
 >
-> 层库真损坏（上面全无效）才考虑重建数据根：停 docker → `mv /var/lib/docker /var/lib/docker.bak` → 起 docker。**所有容器、镜像、卷都会消失**，动手前务必确认没有别的应用依赖它。
+> 这也解释了另外两个反常现象：`docker images` 里列不出它、`docker rmi -f nginx:alpine` 回一句 `No such image`。（实测踩过：反复 `docker pull` 每次都打印 `Downloaded newer image`，拉完依然不在。）
 
-> 💡 如果诊断显示是**磁盘满**：0.5.22 起引擎的转换产物和临时文件已从「容器可写层」改挂到 `${TRIM_PKGVAR}/data`（见上面「数据与日志目录」），不会再无限往系统盘堆。这次损坏是历史遗留，清理完就能正常装。
+#### 第二步：清掉残留记录
+
+```bash
+bash tools/fv-docker-layerdb.sh          # 1. 只读报告：列出「层数据已丢失」的条目
+systemctl stop docker                    # 2. 停 daemon（改 layerdb 必须在停止状态）
+bash tools/fv-docker-layerdb.sh --fix    # 3. 清理（自动备份 layerdb，只删确认残留的条目）
+systemctl start docker                   # 4. 起 daemon
+docker pull nginx:alpine                 # 5. 现在应该能拉下来了
+docker pull python:3-alpine
+docker pull basemetas/fileview:1.5.2
+```
+
+脚本**只删「`cache-id` 指向的目录确实不存在」的条目** —— 那部分数据已经丢了，元数据是垃圾，删掉不会影响任何还能用的镜像；清理前会把 layerdb 打包备份到 `${DockerRootDir}/image/`。
+
+#### 顺便确认不是别的原因
+
+```bash
+docker info --format '{{.DockerRootDir}}'      # 数据根（fnOS 上通常是 /vol1/docker）
+df -h <数据根>; df -i <数据根>                  # 磁盘 / inode 有没有满
+dmesg | grep -iE 'I/O error|btrfs|ext4|xfs|corrupt' | tail -30    # 文件系统有没有被写坏
+docker ps -a --format '{{.Names}}\t{{.Status}}'                   # 其它应用有没有被牵连
+```
+
+三项都正常就放心按上面的流程清；**有文件系统报错就先处理存储**，别再折腾 Docker。
+
+> 磁盘写满、断电、异常重启都会留下这种残留。0.5.22 起引擎的转换产物已从「容器可写层」改挂到 `${TRIM_PKGVAR}/data`（见上面「数据与日志目录」），不会再往系统盘堆 —— 但已经损坏的元数据得先清掉。
+
+#### 三个镜像各自的作用
+
+| 镜像 | 作用 |
+|---|---|
+| `nginx:alpine` | 网关 |
+| `python:3-alpine` | 逐用户权限闸门 |
+| `basemetas/fileview:1.5.2` | 预览引擎 |
+
+报错点名哪个就处理哪个。**不要**拿机器上已有的 `nginx:latest` 来替换 `alpine` —— 两者基底不同（Debian 162MB vs musl ~40MB），而且会让本应用多一层对别人镜像的依赖。
 
 ### 卸载失败（`Request failed`）
 

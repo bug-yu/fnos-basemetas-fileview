@@ -66,11 +66,20 @@ fi
 
 say "7. 结论"
 echo "  上面第 1 节的磁盘占用、第 2 节的 system df、第 6 节的 daemon 日志最关键。"
-echo "  常见三种成因："
+echo
+echo "  ★ 如果第 6 节里出现这两句（哪怕只有一句），就是「镜像元数据残留」："
+echo "      msg=\"not restoring image\" chainID=... err=\"layer does not exist\""
+echo "      Handler for GET /v1.51/images/<名字>/json returned error: layer does not exist"
+echo "    含义：镜像的 layerdb 记录还在，但它指向的层数据（overlay2/<cache-id>）已经没了。"
+echo "    ⚠️ 这种情况**重拉永远不会成功** —— chainID 由内容算出，同样的内容算出同样的 ID，"
+echo "       注册时又撞上那条坏记录。必须清掉残留："
+echo "         bash tools/fv-docker-layerdb.sh          # 先看只读报告"
+echo "         systemctl stop docker"
+echo "         bash tools/fv-docker-layerdb.sh --fix    # 自动备份后再删"
+echo "         systemctl start docker"
+echo
+echo "  其它常见成因："
 echo "    a) Docker 数据根所在分区写满 / inode 用尽 → 层解压失败，留下残缺引用"
 echo "    b) 某次 pull 被中断（断电、重启、磁盘满）→ 内容库里留下悬挂引用"
-echo "    c) overlay2 层库损坏"
-echo
-echo "  修法（由轻到重，见 README「安装报 layer does not exist」一节）："
-echo "    重试安装 → 手工 docker pull → docker rmi 后重拉 → 重启 docker → image prune → 最后才动数据根"
+echo "    c) overlay2 层库损坏（上面全无效时才考虑重建数据根）"
 hr
