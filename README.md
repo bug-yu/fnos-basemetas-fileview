@@ -22,7 +22,7 @@
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
 | `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
 | `tools/fv-docker-doctor.sh` | NAS 上一键**诊断 Docker 侧**问题（安装报 `layer does not exist` / 拉不动镜像时用，只读） |
-| `tools/fv-docker-layerdb.sh` | 清掉 Docker 镜像元数据里「层数据已丢失」的残留条目（安装报 `layer does not exist` 的真解，`--fix` 前会先备份） |
+| `tools/fv-docker-layerdb.sh` | 检查 / 清理 Docker 镜像元数据（layerdb）里的残留条目（`layer does not exist` 的第二步处理；`--fix` 前会自动备份） |
 | `CHANGELOG.md` | 版本更新说明 |
 
 > `.fpk` 里装的是「怎么跑」而不是「跑什么」：预览引擎镜像 `basemetas/fileview:1.5.2`（约 863 MB）在**安装时**从 Docker Hub 拉取，不在包内。这也是飞牛官方 Docker 应用的标准形态。
@@ -227,7 +227,9 @@ Error response from daemon: layer does not exist
 unable to get image 'nginx:alpine': Error response from daemon: layer does not exist
 ```
 
-这是 **Docker daemon 的镜像元数据（layerdb）坏了，与本应用无关**：报错发生在 `docker pull` 阶段，比安装包里的任何脚本都早；本应用只做容器级操作（`docker rm -f`、`compose down`），**从不 `rmi` / `prune`**，卸载也不会删镜像。
+这是 **Docker daemon 的镜像状态不一致，与本应用无关**：报错发生在 `docker pull` 阶段，比安装包里的任何脚本都早；本应用只做容器级操作（`docker rm -f`、`compose down`），**从不 `rmi` / `prune`**，卸载也不会删镜像。
+
+同时会出现几个反直觉的现象，别被带偏：`docker images` 里列不出那个镜像、`docker rmi -f X` 回一句 `No such image`、`docker pull X` 打印了 `Downloaded newer image` 拉完却依然不在。
 
 #### 第一步：看 dockerd 日志定性
 
@@ -242,25 +244,47 @@ level=error msg="not restoring image" chainID="sha256:xxxx…" err="layer does n
 level=error msg="Handler for GET /v1.51/images/nginx:alpine/json returned error: layer does not exist"
 ```
 
-**含义**：镜像的 layerdb 记录还在，但它指向的层数据（`overlay2/<cache-id>`）已经没了。
+含义：**daemon 认为那个镜像在，但它的层取不出来**。有两种成因，处理方式完全不同：
 
-> ⚠️ **这种情况重拉是永远不可能成功的。** 镜像的 chainID 由**内容**算出，同样的内容算出同样的 ID，拉下来注册时又撞上那条坏记录 → 又报 `layer does not exist`。
->
-> 这也解释了另外两个反常现象：`docker images` 里列不出它、`docker rmi -f nginx:alpine` 回一句 `No such image`。（实测踩过：反复 `docker pull` 每次都打印 `Downloaded newer image`，拉完依然不在。）
+| 成因 | 怎么判断 | 怎么修 |
+|---|---|---|
+| ① daemon 自己的索引状态不一致（**断电 / 异常重启后最常见**） | 跑第二步的扫描，**残留 0 条** | 干净地停一次再起（第二步） |
+| ② layerdb 里真有残留条目 | 扫描报出残留条数 > 0 | 用脚本 `--fix` 清掉（第三步） |
 
-#### 第二步：清掉残留记录
+#### 第二步：先试「干净地停一次再起」—— 实测这一步就够了
+
+> ⚠️ 是 `stop` + `start`，**不是 `restart`**。
+> 实测（2026-09-28，断电后）：`systemctl restart docker` 试了两次都没修好，日志里还留着一堆
+> ```
+> docker.service: Unit process 72220 (docker-proxy) remains running after unit stopped.
+> docker.service: Found left-over process … This usually indicates unclean termination of a previous run
+> ```
+> 而一次干净的 `stop`（等它真的停完）→ `start` 之后，`docker pull nginx:alpine` 直接回
+> **`Image is up to date`** —— 镜像本来就在，只是 daemon 认不出来。
 
 ```bash
-bash tools/fv-docker-layerdb.sh          # 1. 只读报告：列出「层数据已丢失」的条目
-systemctl stop docker                    # 2. 停 daemon（改 layerdb 必须在停止状态）
-bash tools/fv-docker-layerdb.sh --fix    # 3. 清理（自动备份 layerdb，只删确认残留的条目）
-systemctl start docker                   # 4. 起 daemon
-docker pull nginx:alpine                 # 5. 现在应该能拉下来了
-docker pull python:3-alpine
-docker pull basemetas/fileview:1.5.2
+systemctl stop docker
+pgrep -a docker-proxy          # 应该没有输出；有就再等一会儿
+systemctl start docker
+docker pull nginx:alpine       # 现在应该就好了
 ```
 
-脚本**只删「`cache-id` 指向的目录确实不存在」的条目** —— 那部分数据已经丢了，元数据是垃圾，删掉不会影响任何还能用的镜像；清理前会把 layerdb 打包备份到 `${DockerRootDir}/image/`。
+#### 第三步：还不行，才查 layerdb 残留
+
+```bash
+bash tools/fv-docker-layerdb.sh          # 只读：报告残留条数（docker 跑着也能用）
+systemctl stop docker
+bash tools/fv-docker-layerdb.sh --fix    # 自动备份 layerdb 后，只删确认残留的条目
+systemctl start docker
+docker pull nginx:alpine
+```
+
+脚本只删这两类条目 —— 那部分数据已经丢了，元数据是垃圾，删掉不会影响任何还能用的镜像：
+
+- `cache-id` 指向的层数据目录（`overlay2/<cache-id>`）不存在
+- `parent` 指向的父层条目不存在（父层丢了同样会让整条链取不出来）
+
+`--fix` 前会把 layerdb 打包备份到 `${DockerRootDir}/image/`。
 
 #### 顺便确认不是别的原因
 
@@ -271,9 +295,7 @@ dmesg | grep -iE 'I/O error|btrfs|ext4|xfs|corrupt' | tail -30    # 文件系统
 docker ps -a --format '{{.Names}}\t{{.Status}}'                   # 其它应用有没有被牵连
 ```
 
-三项都正常就放心按上面的流程清；**有文件系统报错就先处理存储**，别再折腾 Docker。
-
-> 磁盘写满、断电、异常重启都会留下这种残留。0.5.22 起引擎的转换产物已从「容器可写层」改挂到 `${TRIM_PKGVAR}/data`（见上面「数据与日志目录」），不会再往系统盘堆 —— 但已经损坏的元数据得先清掉。
+前三项都正常、其它容器也都在跑，就放心按上面两步处理；**有文件系统报错就先处理存储**，别再折腾 Docker。
 
 #### 三个镜像各自的作用
 
@@ -284,6 +306,8 @@ docker ps -a --format '{{.Names}}\t{{.Status}}'                   # 其它应用
 | `basemetas/fileview:1.5.2` | 预览引擎 |
 
 报错点名哪个就处理哪个。**不要**拿机器上已有的 `nginx:latest` 来替换 `alpine` —— 两者基底不同（Debian 162MB vs musl ~40MB），而且会让本应用多一层对别人镜像的依赖。
+
+> 三个镜像都能 `docker pull` 成功之后，回应用中心重装即可。
 
 ### 卸载失败（`Request failed`）
 

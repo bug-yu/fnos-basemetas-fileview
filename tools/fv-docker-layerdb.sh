@@ -1,5 +1,5 @@
 #!/bin/bash
-# FileView 预览 —— Docker 镜像元数据（layerdb）残留清理
+# FileView 预览 —— Docker 镜像元数据（layerdb）残留检查 / 清理
 #
 # 解决什么：
 #   dockerd 启动时打
@@ -8,24 +8,35 @@
 #   `docker pull` 显示成功却依然不在、`docker compose up` 报
 #   `unable to get image 'X': layer does not exist`）全都失败。
 #
-#   原因：镜像的 layerdb 记录还在，但它指向的层数据（overlay2/<cache-id>）已经没了。
-#   ★ 重拉是**不可能**成功的 —— 镜像 chainID 由内容算出，同样的内容算出同样的 ID，
-#     注册时又撞上那条坏记录。必须先把残留记录清掉。
+# 两种成因，本脚本针对**第二种**：
+#   ① daemon 自己的索引状态不一致（断电/异常重启后常见）
+#      → **先试「干净地停一次再起」**：systemctl stop docker（等它真的停完，确认没有
+#        残留 docker-proxy）→ systemctl start docker → docker pull <镜像>
+#        实测：这一步就恢复了，而且 `docker pull` 会回 `Image is up to date`（镜像本来就在）
+#   ② layerdb 里真有残留条目（指向的层数据 / 父层条目没了）
+#      → 本脚本的 `--fix` 处理
 #
-# 本脚本只删「cache-id 指向的目录确实不存在」的条目 —— 那部分数据已经丢了，
-# 元数据是垃圾；删掉不会影响任何还能用的镜像。
+# ⚠️ 别把 ① 当成 ②：2026-09-28 实测过一次 ①，698 条 layerdb **一条残留都没有**，
+#    纯粹是 daemon 状态不一致，干净 stop+start 就好了。
+#    另外 `systemctl restart docker` 在系统状态本来就乱时**可能修不好**
+#    （日志里会看到 `docker-proxy remains running after unit stopped` /
+#      `unclean termination of a previous run`）—— 用 stop + 确认停干净 + start。
+#
+# 本脚本只删「cache-id 指向的层数据目录不存在」或「parent 父层条目不存在」的条目，
+# 删掉不会影响任何还能用的镜像；`--fix` 前会自动打包备份 layerdb。
 #
 # 用法：
 #   bash tools/fv-docker-layerdb.sh                  # 只读报告（docker 跑着也能用）
 #   bash tools/fv-docker-layerdb.sh --fix            # 真正清理（必须先停 docker！）
-#   FV_DOCKER_ROOT=/vol1/docker bash ... --fix       # 手动指定数据根（docker 停着时用）
+#   FV_DOCKER_ROOT=/vol1/docker bash ... --fix       # 手动指定数据根（停着时也能自动探测）
 #
 # 推荐流程：
-#   bash tools/fv-docker-layerdb.sh          # 1. 先看报告，确认只有那几条残留
-#   systemctl stop docker                    # 2. 停 daemon
-#   bash tools/fv-docker-layerdb.sh --fix    # 3. 清理（会自动备份 layerdb）
-#   systemctl start docker                   # 4. 起 daemon
-#   docker pull nginx:alpine                 # 5. 现在应该能拉下来了
+#   systemctl stop docker && systemctl start docker   # 1. 先试干净的停/起（多数情况够了）
+#   docker pull <镜像>                                # 2. 还不行再往下
+#   bash tools/fv-docker-layerdb.sh                   # 3. 只读报告，看有没有残留
+#   systemctl stop docker                             # 4. 停 daemon
+#   bash tools/fv-docker-layerdb.sh --fix             # 5. 清理（会自动备份）
+#   systemctl start docker && docker pull <镜像>      # 6. 重拉
 
 set -u
 
@@ -33,7 +44,15 @@ FIX=0
 [ "${1:-}" = "--fix" ] && FIX=1
 
 ROOT="${FV_DOCKER_ROOT:-}"
-[ -n "$ROOT" ] || ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+# daemon 停着时 docker info 取不到，按常见路径自动探测（fnOS 上是 /vol1/docker）
+if [ -z "$ROOT" ] && docker info >/dev/null 2>&1; then
+  ROOT="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null)"
+fi
+if [ -z "$ROOT" ]; then
+  for c in /vol1/docker /vol2/docker /vol3/docker /var/lib/docker; do
+    if [ -d "$c/image/overlay2/layerdb/sha256" ]; then ROOT="$c"; break; fi
+  done
+fi
 if [ -z "$ROOT" ] || [ ! -d "$ROOT" ]; then
   echo "取不到 Docker 数据根。请显式指定："
   echo "  FV_DOCKER_ROOT=/vol1/docker bash $0 $*"
@@ -50,6 +69,9 @@ echo
 # ---------------------------------------------------------------------------
 # 1. 扫描残留条目
 # ---------------------------------------------------------------------------
+# 查两件事：
+#   ① cache-id 指向的层数据目录（overlay2/<cache-id>）还在不在
+#   ② parent 指向的父层条目还在不在（父层丢了同样会让整条链「layer does not exist」）
 total=0
 stale_list=""
 echo "== 扫描 layerdb =="
@@ -57,19 +79,29 @@ for d in "$LAYERDB"/*/; do
   [ -d "$d" ] || continue
   total=$((total + 1))
   id="$(basename "$d")"
+  bad=""
   cid="$(cat "$d/cache-id" 2>/dev/null)"
   if [ -z "$cid" ]; then
-    echo "  ⚠️  无 cache-id      chainID=$id"
-    stale_list="${stale_list}${id}
-"
+    bad="无 cache-id"
   elif [ ! -d "$OVERLAY/$cid" ]; then
-    echo "  ❌ 层数据缺失        chainID=$id  cache-id=$cid"
+    bad="层数据缺失(cache-id=$cid)"
+  fi
+  if [ -z "$bad" ]; then
+    par="$(cat "$d/parent" 2>/dev/null)"
+    if [ -n "$par" ] && [ ! -d "$LAYERDB/$par" ]; then
+      bad="父层条目缺失(parent=$par)"
+    fi
+  fi
+  if [ -n "$bad" ]; then
+    echo "  ❌ $bad"
+    echo "     chainID=$id"
     stale_list="${stale_list}${id}
 "
   fi
 done
-stale_n="$(printf '%s' "$stale_list" | grep -c . 2>/dev/null || echo 0)"
-echo "  共 $total 条，其中**残留 $stale_n 条**"
+stale_n="$(printf '%s' "$stale_list" | grep -c . 2>/dev/null)"
+[ -n "$stale_n" ] || stale_n=0
+echo "  共 $total 条，其中残留 **$stale_n** 条"
 echo
 
 # ---------------------------------------------------------------------------
