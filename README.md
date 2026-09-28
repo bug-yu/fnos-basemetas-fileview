@@ -239,9 +239,17 @@ bash tools/fv-docker-doctor.sh
 | 报错 | 含义 |
 |---|---|
 | `Error response from daemon: layer does not exist`（在 `Pulling` 列表之后） | 拉取过程中撞上了坏的本地层 |
-| `unable to get image 'nginx:alpine': Error response from daemon: layer does not exist` | **明确就是 `nginx:alpine` 本地坏了** —— 直接按下面第 3 步处理它 |
+| `unable to get image 'nginx:alpine': Error response from daemon: layer does not exist` | **明确就是 `nginx:alpine` 出了问题** —— 直接重拉它，见下面第 3 步 |
 
-三个镜像各自的作用，方便判断影响面：`nginx:alpine` 是网关、`python:3-alpine` 是权限闸门、`basemetas/fileview:1.5.2` 是引擎。**报错点名哪个，就 `docker rmi -f` 哪个再重拉**，不用动其它的。
+> ⚠️ **别看到报错就去 `docker rmi`**。实测踩过：这个镜像本地**根本不存在**，
+> `docker rmi -f nginx:alpine` 只会回一句 `No such image`（这不是新问题，是正常的），
+> 而**直接 `docker pull nginx:alpine` 就成功了**。
+> `layer does not exist` 发生在「下载 → 落盘」环节，说明的是内容库写坏了，
+> 不是「有个残缺镜像等你删」。**先重拉，重拉失败再考虑删。**
+
+三个镜像各自的作用，方便判断影响面：`nginx:alpine` 是网关、`python:3-alpine` 是权限闸门、`basemetas/fileview:1.5.2` 是引擎。报错点名哪个就处理哪个，不用动其它的。
+
+> 顺带一提：如果你机器上已经有别的应用拉的 `nginx:latest`，**不要拿它来替换 `alpine`** —— 两者基底不同（Debian 162MB vs musl ~40MB），而且会让本应用多一层对别人镜像的依赖。compose 里声明 `nginx:alpine` 是自洽的，缺了它会自己拉。
 
 最常见的三种成因：
 
@@ -264,9 +272,12 @@ bash tools/fv-docker-doctor.sh
 docker pull nginx:alpine
 docker pull basemetas/fileview:1.5.2
 
-# 3. 报同样的错 / 报错里点名了某个镜像 → 把那个镜像清掉再拉（只影响本应用）
-docker rmi -f nginx:alpine
+# 3. 报同样的错 / 报错里点名了某个镜像 → 直接重拉那个镜像
+#    （rmi 报 No such image 是正常的：它本地可能压根不存在，问题在「下载→落盘」）
 docker pull nginx:alpine
+
+# 3b. 重拉也不行，才考虑清掉它再拉
+docker rmi -f nginx:alpine && docker pull nginx:alpine
 
 # 4. 还不行 / 断电之后 → 重启 daemon，让它重建内容库索引
 systemctl restart docker
