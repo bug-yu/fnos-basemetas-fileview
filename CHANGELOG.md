@@ -98,6 +98,61 @@ nginx: [emerg] "map" directive is not allowed here in /etc/nginx/conf.d/nginx.co
 > 要么依赖镜像主配置的 `include`，要么自己包一层 `events{} + http{}`，**不能直接指片段**。
 > 而一个"探测失败就回落到原配置"的包装器，如果探测方法本身永远失败，就等于**必然崩**。
 
+### 0.5.26 修订（第二轮：`load_module` 放错了地方）
+
+上面那版修完后容器能起来了，但启动日志显示**走到了降级分支**，报错是：
+
+```
+nginx: [emerg] "load_module" directive is not allowed here in /etc/nginx/conf.d/nginx.conf:40
+```
+
+**根因（比第一轮更根本）**：`load_module` 的合法上下文是 **`main`（主配置顶层）**
+—— nginx 官方文档写得很清楚：`Syntax: load_module file;  Context: main`。
+而我把这行写在了 `conf.d/nginx.conf` 里，它是被 `http { include conf.d/*.conf; }`
+拉进来的，上下文是 **http** → **必然**报 "not allowed here"。
+
+**关键区分（这次踩的坑）**：
+
+| 报错 | 含义 | 该怎么办 |
+|---|---|---|
+| `"load_module" directive is not allowed here` | **位置**非法 | 把指令挪到 `main` 层 —— 与镜像带不带 njs **无关** |
+| `dlopen() ".../ngx_http_js_module.so" failed` | **文件**缺失 | 这才是真的没有 njs，应降级 |
+| `"map"/"server" directive is not allowed here` | 把 conf.d 片段当主配置了 | `-c` 指向主配置，别指片段 |
+
+第一轮的降级判据是 `grep js_module`——**把"位置非法"和"文件缺失"混为一谈**，
+于是明明镜像里可能有 njs，也被误判成"不含 njs"而走了降级（防护白关）。
+
+**修法**：
+
+- 新增 **`app/docker/fv-main.main`** —— 我们自己的**主配置**（`main` 上下文）：
+  ```nginx
+  load_module modules/ngx_http_js_module.so;   # ← main 层，合法
+  events { worker_connections 1024; }
+  http { include /etc/nginx/conf.d/*.conf; }    # ← 片段在这里，http 上下文
+  ```
+  文件名故意用 `.main` 而非 `.conf`：因为它和片段一起被挂到 `/etc/nginx/conf.d/`，
+  若叫 `.conf` 就会被**镜像主配置**的 `include conf.d/*.conf` 误收进去，`load_module`
+  又会落到 http 上下文里报同样的错。
+- `nginx.conf`（片段）里**删掉 `load_module`**，只保留 `js_path` / `js_import`（http 上下文，合法）。
+- 启动改为 `-c /etc/nginx/conf.d/fv-main.main`；探测也用同一个 `-c`。
+- **降级判据收紧**：只认 `dlopen` / `not binary compatible` / `No such file` 等
+  **"文件缺失"**特征；若报的是 `directive is not allowed here`，则判定为配置写错，
+  **不降级**、让错误原样暴露（避免再次掩盖）。
+- **探测 .so 真实路径**：`load_module modules/xxx.so` 的相对路径按编译前缀解析，
+  而各发行版 .so 位置不同（`/usr/lib/nginx/modules/` vs `/etc/nginx/modules/`）。
+  启动脚本先 `find` 定位实际路径，再逐一试常见路径，全失败才认定"镜像不含 njs"。
+- **include 重写**：降级要把 conf.d 副本的 njs 指令剥掉，但主配置里 include 的是
+  **绝对路径** `/etc/nginx/conf.d/*.conf` —— 剥掉的副本根本不会被读到。所以脚本
+  会把 include 重写到副本目录（`/tmp/fv-conf.d/*.conf`），保证降级真正生效。
+- 回归断言同步更新（`selfcheck.sh` 5 条 + `test_njs_boot.py` 全部用例）：
+  新增「主配置的 `load_module` 必须在 main 层」「片段里绝不能有 `load_module`」
+  「降级判据必须只认文件缺失特征」「include 必须能被重写到副本」等。
+
+> 教训：**同一个"not allowed here"家族里，`load_module` / `map` 是两件不同的事**，
+> 但都容易被误读成"环境缺东西"。看到 `not allowed here` 先想**上下文放错**，
+> 而不是"缺依赖"。另外：**判据要能区分"配置写错"与"环境缺失"**，
+> 否则降级机制会变成掩盖 bug 的帮凶。
+
 ## 0.5.25
 
 按第三方安全审计逐条核对后，做掉四项「确认可行、且不改变正常行为」的收紧。

@@ -132,7 +132,15 @@ proxy_pass http://fileview:80/ ← 只有上面两道都放行才转发
 
 要点：
 
-- **njs 是 nginx 官方模块，官方 `nginx:alpine` 镜像自带**，无需换镜像；
+- **njs 由 `load_module` 加载，而该指令只能在主配置的 `main` 层** —— 所以本项目
+  自带主配置 `app/docker/fv-main.main`（`load_module` + `events{}` +
+  `http{ include conf.d/*.conf; }`），业务片段 `nginx.conf` 里只放 `js_path`/`js_import`
+  （http 上下文合法）。
+  ⚠️ 放在片段里会报 `"load_module" directive is not allowed here` —— 这个错**与镜像
+  带不带 njs 无关**，曾导致误判成"镜像不含 njs"而白白降级（见 CHANGELOG「第二轮」）。
+- **镜像带不带 njs 不预设**：启动脚本 `fv-njs-boot.sh` 先 `find` 定位 `.so` 实际路径、
+  再逐一试加载；确实没有就自动降级（剥掉 njs 指令）并打醒目 WARN，保证应用一定能打开。
+  `load_module` 失败会让 nginx 以 `[emerg]` 退出、整个应用打不开，故必须有此兜底。
 - 只对「路径在 body 里」的接口生效（`/localFile`、`/netFile`、`/status/poll`、
   `/password/unlock`、`/epub/resource`、`/convert/api/srvFile`），其余请求原样放过；
 - 新入口 `GET /check-body` **复用闸门的 `can_read` + `current_mode`**（判定单一事实来源），
@@ -140,10 +148,15 @@ proxy_pass http://fileview:80/ ← 只有上面两道都放行才转发
 - 闸门不可用 / body 非 JSON / 子请求异常 → **fail-open**，与 `auth_request` 的
   `upstream backup` 方向一致（宁可没保护，不把应用弄坏）；
 - 主 location 与 SPA location **都挂了** `js_access`（少挂一处即可被绕过，自检有断言）。
+- 降级只在错误确实是**「模块文件缺失」**（`dlopen` / `not binary compatible`）时发生；
+  若是 `directive is not allowed here` 这类**配置写错**，则**不降级**、让错误原样暴露
+  —— 否则降级会变成掩盖 bug 的帮凶（前两轮事故的共同教训）。
 
-**自检**：`fpk/tools/selfcheck.sh` 新增 7 条断言（守卫脚本存在 / `load_module` njs /
-`js_import` / `js_access` 至少 2 处 / 闸门 `/check-body` 入口 / `location = /__acl-body` /
-判定复用 `can_read`）；`test_acl_decide.py` 从 12 条扩到 **20 条**（新增 8 条 body 路径判定，
+**自检**：`fpk/tools/selfcheck.sh` 的相关断言（守卫脚本存在 / `load_module` 在 main 层 /
+片段里没有 `load_module` / `js_access` 至少 2 处 / 闸门 `/check-body` 入口 /
+`location = /__acl-body` / 判定复用 `can_read` / 降级判据只认文件缺失 /
+include 可重写到副本）；`test_njs_boot.py` 验证主配置与片段的上下文归属；
+`test_acl_decide.py` 从 12 条扩到 **20 条**（新增 8 条 body 路径判定，
 含「合法 Referer 掩护场景仍拦截」）。
 
 **残留风险（已知、未修）**：

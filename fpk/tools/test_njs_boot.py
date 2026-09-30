@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-fv-njs-boot.sh 的逻辑离线验证（本机无 Docker / nginx）。
+网关主配置/片段结构 + fv-njs-boot.sh 逻辑的离线验证（本机无 Docker / nginx）。
 
-验证目标（都是 0.5.26 首版翻车的根因）：
-  1. 片段（conf.d/nginx.conf）顶层是 **http 上下文** 指令（map/upstream/server/load_module…），
-     绝不能直接当主配置传给 nginx -c —— 否则必报
-         "map" directive is not allowed here
-  2. 正常路径必须**不传 -c**（复用镜像默认主配置）—— 这是零风险的路径
-  3. 降级主配置把片段**包在 http{} 里**，且剥掉了 4 类 njs 指令
-  4. 降级只在"错误确实是 njs 引起"时才发生（不掩盖真正的语法错）
+背景：0.5.26 连续两轮翻车，根因分别是
+  ① 把 conf.d 片段当主配置传给 nginx -c  → "map" directive is not allowed here
+  ② 把 load_module 写在 conf.d 片段里      → "load_module" directive is not allowed here
+两个错误都**与镜像带不带 njs 无关**，却都被误判成"镜像不含 njs"而走了降级。
 
-本脚本做结构推演，不能替代真机 nginx -t，但足以拦住"上下文放错"这类错误。
+本脚本静态守住这些结构性约束（真机 nginx -t 仍是最终判据）。
 """
 import re
 import subprocess
@@ -19,14 +16,14 @@ import sys
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent / "basemetas-fileview" / "app" / "docker"
-FRAG = BASE / "nginx.conf"
+FRAG = BASE / "nginx.conf"          # conf.d 片段（http 上下文）
+MAIN = BASE / "fv-main.main"        # 我们的主配置（main 上下文）
 BOOT = BASE / "fv-njs-boot.sh"
 
-HTTP_CTX_DIRECTIVES = (
-    "map", "upstream", "server", "load_module", "js_path", "js_import",
-    "include", "log_format", "proxy_cache_path", "geo", "split_clients",
-)
-MAIN_CTX_DIRECTIVES = ("events", "http", "worker_processes", "pid", "user", "error_log")
+# 只能出现在 main 上下文的指令
+MAIN_ONLY = ("load_module", "worker_processes", "pid", "user", "events", "http")
+# 属于 http 上下文的指令
+HTTP_CTX = ("map", "upstream", "server", "js_path", "js_import", "log_format")
 
 fails = []
 
@@ -53,103 +50,121 @@ def top_level_words(text):
     return depth, out
 
 
-frag_text = FRAG.read_text(encoding="utf-8")
-boot_text = BOOT.read_text(encoding="utf-8")
+frag = FRAG.read_text(encoding="utf-8")
+main = MAIN.read_text(encoding="utf-8")
+boot = BOOT.read_text(encoding="utf-8")
 
-print("① 片段（nginx.conf）顶层指令必须全部属于 http 上下文")
-depth, words = top_level_words(frag_text)
-check(depth == 0, "花括号配平", "花括号不配平 depth=%d" % depth)
-bad = [w for w in words if w in MAIN_CTX_DIRECTIVES]
-check(not bad, "没有主配置专属指令（events/http/worker_processes…）",
-      "片段里出现主配置专属指令：%s" % bad)
-has_http_ctx = [w for w in words if w in HTTP_CTX_DIRECTIVES]
-check(bool(has_http_ctx), "含 http 上下文指令：%s" % sorted(set(has_http_ctx)),
-      "没发现任何 http 上下文指令（片段结构可能变了）")
-check("map" in words, "顶层含 map（这正是首版报错的那条）", "顶层居然没有 map")
-
-print()
-print("② 反证：首版把片段直接当主配置 → map 落到深度 0 → 必炸")
-check("map" in words,
-      "与真机 \"map is not allowed here in .../nginx.conf:13\" 完全吻合",
-      "反证不成立")
+print("① conf.d 片段（nginx.conf）里绝不能有 main-only 指令")
+d, w = top_level_words(frag)
+check(d == 0, "片段花括号配平", "片段花括号不配平 depth=%d" % d)
+bad = [x for x in w if x in ("load_module", "worker_processes", "pid", "user")]
+check(not bad, "片段里没有 load_module/worker_processes/pid/user ✅（第②次翻车点）",
+      "片段里出现了 main-only 指令：%s ★ 必报 '... is not allowed here'" % bad)
+check("map" in w or "upstream" in w or "server" in w or "js_import" in w,
+      "片段确实是 http 上下文内容（含 map/server/js_import 等）",
+      "片段看起来不像 http 上下文内容，结构可能变了")
+check("js_import" in w, "片段保留 js_import（http 上下文，合法）",
+      "片段缺少 js_import")
 
 print()
-print("③ 正常路径：必须不传 -c（复用镜像默认主配置的 include conf.d/*.conf）")
-exec_lines = re.findall(r"^\s*exec nginx\b.*$", boot_text, re.M)
-check(bool(exec_lines), "找到 exec nginx 启动行", "没找到任何 exec nginx")
-normal = [l for l in exec_lines if "-c" not in l]
-check(bool(normal), "存在**不传 -c** 的启动路径（正常路径，零风险）：%s"
-      % (normal[0].strip() if normal else "-"),
-      "所有启动路径都传了 -c —— 正常路径没有复用镜像主配置")
-check(any("nginx -t" in l and "-c" not in l for l in boot_text.splitlines()),
-      "探测用的是 `nginx -t`（不带 -c），覆盖真实启动路径",
-      "探测没有用不带 -c 的 nginx -t（那测不到真实场景）")
+print("② 主配置（fv-main.main）必须是 main 上下文，且含 load_module")
+dm, wm = top_level_words(main)
+check(dm == 0, "主配置花括号配平", "主配置花括号不配平 depth=%d" % dm)
+check("load_module" in wm, "load_module 在 main 层 ✅（第②次翻车点的修复）",
+      "主配置顶层没有 load_module")
+check("events" in wm, "有 events 块", "缺 events 块")
+check("http" in wm, "有 http 块", "缺 http 块")
+check("worker_processes" in wm, "有 worker_processes", "缺 worker_processes")
+# 主配置里不该出现 http 上下文指令在顶层
+badm = [x for x in wm if x in ("map", "server", "upstream", "js_import", "js_path")]
+check(not badm, "主配置顶层没有 http 上下文指令（它们应在片段里）",
+      "主配置顶层出现 http 上下文指令：%s" % badm)
+check("include /etc/nginx/conf.d/*.conf;" in main,
+      "主配置 include conf.d/*.conf（把片段放进 http 内）",
+      "主配置没有 include conf.d/*.conf")
 
 print()
-print("④ 降级路径：临时主配置必须把片段包进 http{}")
-m = re.search(r"cat > \"\$MAIN_FB\" <<EOF\n(.*?)\nEOF", boot_text, re.S)
-if not m:
-    fails.append("没能从脚本里提取降级主配置模板")
-    print("  FAIL 没能提取降级主配置模板")
-else:
-    tmpl = m.group(1)
-    check("events {" in tmpl, "模板有 events 块", "模板缺 events 块")
-    check("http {" in tmpl, "模板有 http 块", "模板缺 http 块")
-    check("include $WORK/*.conf;" in tmpl,
-          "模板 include 降级副本目录（$WORK/*.conf）",
-          "模板没有 include 降级副本目录")
-    check("load_module" not in tmpl,
-          "模板自身不含 load_module（njs 由片段提供）",
-          "模板里出现了 load_module")
-
-    # 模拟 include 展开：把副本片段的（已剥 njs 版）内容放进 http
-    print()
-    print("④b 模拟降级 include 展开：map/server 应落在 http 内")
-    sed_frag = subprocess.run(
-        ["bash", "-c",
-         "sed -e 's|^\\([[:space:]]*\\)load_module[[:space:]].*|\\1#RM|' "
-         "-e 's|^\\([[:space:]]*\\)js_path[[:space:]].*|\\1#RM|' "
-         "-e 's|^\\([[:space:]]*\\)js_import[[:space:]].*|\\1#RM|' "
-         "-e 's|^\\([[:space:]]*\\)js_access[[:space:]].*|\\1#RM|' \"%s\"" % FRAG],
-        capture_output=True, text=True).stdout
-    exp_lines = []
-    for line in tmpl.splitlines():
-        if line.strip().startswith("include $WORK/"):
-            exp_lines.extend("    " + x for x in sed_frag.rstrip().splitlines())
-        else:
-            exp_lines.append(line)
-    edepth, ewords = top_level_words("\n".join(exp_lines))
-    check(edepth == 0, "展开后花括号配平", "展开后花括号不配平")
-    check("map" not in ewords,
-          "展开后 map 落在 http 块内 ✅（首版翻车点已修复）",
-          "展开后 map 仍在顶层 —— 修复无效")
-    check("server" not in ewords, "展开后 server 在 http 块内",
-          "展开后 server 在顶层")
+print("③ 模拟 include 展开：map/server 应落在 http 内，load_module 在 main 层")
+exp_lines = []
+for line in main.splitlines():
+    if line.strip().startswith("include /etc/nginx/conf.d/"):
+        exp_lines.extend("    " + x for x in frag.rstrip().splitlines())
+    else:
+        exp_lines.append(line)
+ed, ew = top_level_words("\n".join(exp_lines))
+check(ed == 0, "展开后花括号配平", "展开后花括号不配平")
+check("map" not in ew, "展开后 map 落在 http 内 ✅", "展开后 map 跑到顶层")
+check("server" not in ew, "展开后 server 落在 http 内 ✅", "展开后 server 跑到顶层")
+check("load_module" in ew, "展开后 load_module 仍在 main 层 ✅", "展开后 load_module 位置异常")
 
 print()
-print("⑤ 降级触发条件：只在错误确实与 njs 有关时才降级")
-check("grep -qiE" in boot_text and "js_module" in boot_text,
-      "有「失败原因是否与 njs 相关」的判断（避免掩盖真正的语法错）",
-      "没有区分「njs 问题」与「其它语法错」，可能把真错误降级掩盖掉")
+print("④ fv-njs-boot.sh：探测与启动都要用主配置（-c fv-main.main），不能指片段")
+check(bool(re.search(r'MAIN_SRC="\$CONF_DIR/fv-main\.main"', boot)),
+      "指向 fv-main.main 作为主配置来源", "没有把 fv-main.main 当作主配置来源")
+check("nginx -t -c \"$MAIN\"" in boot, "探测用 -c \"$MAIN\"（主配置）",
+      "探测没有用主配置做 -t")
+# 绝不能 -c 指片段
+badc = re.findall(r'nginx[^\n]*-c\s+"?\$?(?:ORIG|CONF_DIR/nginx\.conf)', boot)
+check(not badc, "没有把 conf.d 片段传给 -c ✅（第①次翻车点）",
+      "发现把片段传给 -c：%s" % badc)
 
 print()
-print("⑥ 降级 sed 是否精确注释掉 4 类 njs 指令")
-script = """
-sed -e 's|^\\([[:space:]]*\\)load_module[[:space:]].*|\\1# RM|' \\
-    -e 's|^\\([[:space:]]*\\)js_path[[:space:]].*|\\1# RM|' \\
-    -e 's|^\\([[:space:]]*\\)js_import[[:space:]].*|\\1# RM|' \\
-    -e 's|^\\([[:space:]]*\\)js_access[[:space:]].*|\\1# RM|' \\
-    "%s"
-""" % FRAG
-out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout
-for d in ("load_module", "js_path", "js_import", "js_access"):
+print("⑤ 降级判据：只在「模块文件缺失」时才降级，不掩盖配置错误")
+check(re.search(r"grep -qiE '[^']*dlopen", boot) is not None,
+      "降级判据检查 dlopen / not binary compatible 等「文件缺失」特征",
+      "降级判据没有检查 dlopen 等文件缺失特征")
+check("load_module\" directive is not allowed here" in boot
+      or "directive is not allowed here" in boot,
+      "提示里明确区分了「位置非法」与「文件缺失」",
+      "没有区分位置非法与文件缺失的提示")
+
+print()
+print("⑥ 探测 .so 真实路径（相对前缀不可靠，逐个候选试）")
+check("JS_SO_CANDIDATES" in boot, "有候选路径清单 JS_SO_CANDIDATES",
+      "没有探测 .so 路径的逻辑")
+check("try_with_so" in boot, "有 try_with_so 逐个试加载",
+      "没有逐个试加载的逻辑")
+check("/usr/lib/nginx/modules/ngx_http_js_module.so" in boot,
+      "候选里含 /usr/lib/nginx/modules/（Debian 系常见位置）",
+      "候选里没有 /usr/lib/nginx/modules/")
+check("/etc/nginx/modules/ngx_http_js_module.so" in boot,
+      "候选里含 /etc/nginx/modules/（官方镜像前缀位置）",
+      "候选里没有 /etc/nginx/modules/")
+check("modules/ngx_http_js_module.so" in boot,
+      "候选里保留了裸相对路径（让 nginx 按自身 prefix 解析）",
+      "候选里没有裸相对路径")
+
+print()
+print("⑥b 主配置的 include 必须指向可写副本（否则降级剥的副本读不到）")
+check(re.search(r"include\s+\$\{?WORK\}?/\*\.conf", boot) is not None
+      or "include ${WORK}/*.conf" in boot or "include $WORK/*.conf" in boot,
+      "脚本会把 include 重写到副本目录（否则降级等于没做）",
+      "include 没有重写到副本目录 —— 降级时改动不会生效")
+
+print()
+print("⑦ 降级时 njs 4 类指令一起去掉（否则 js_import 报 unknown directive）")
+check(boot.count("js_path") >= 1 and boot.count("js_import") >= 1
+      and boot.count("js_access") >= 1 and boot.count("load_module") >= 1,
+      "降级 sed 覆盖 load_module / js_path / js_import / js_access",
+      "降级 sed 漏了某类 njs 指令")
+
+print()
+print("⑧ 本机可做的真实 sed 验证：降级后 njs 指令应全部失效")
+# ⚠️ 路径用 Windows 形式：Windows 原生 Python 不认 Git Bash 的 /tmp。
+import tempfile
+import os
+work = os.path.join(tempfile.gettempdir(), "_t_frag.conf")
+subprocess.run(["bash", "-c",
+                "sed -e 's|^\\([[:space:]]*\\)js_path[[:space:]].*|\\1#RM|' "
+                "-e 's|^\\([[:space:]]*\\)js_import[[:space:]].*|\\1#RM|' "
+                "-e 's|^\\([[:space:]]*\\)js_access[[:space:]].*|\\1#RM|' "
+                "'%s' > '%s'" % (FRAG, work)], check=True)
+out = Path(work).read_text(encoding="utf-8")
+for k in ("js_path", "js_import", "js_access"):
     live = [l for l in out.splitlines()
-            if l.strip().startswith(d + " ") or l.strip().startswith(d + "\t")]
-    check(not live, "降级后 %s 已无有效指令" % d, "降级后仍有有效 %s：%s" % (d, live))
-removed = out.count("# RM")
-check(removed >= 4, "共注释掉 %d 行（≥4）" % removed, "注释行数不足：%d" % removed)
-d2, _ = top_level_words(out)
-check(d2 == 0, "降级片段花括号仍配平", "降级片段花括号不配平")
+            if l.strip().startswith(k + " ") or l.strip().startswith(k + "\t")]
+    check(not live, "降级后 %s 已无有效指令" % k, "降级后仍有有效 %s：%s" % (k, live))
+Path(work).unlink(missing_ok=True)
 
 print()
 if fails:
@@ -157,4 +172,4 @@ if fails:
     for f in fails:
         print("   - " + f)
     sys.exit(1)
-print("✅ fv-njs-boot 逻辑静态验证通过")
+print("✅ 主配置/片段结构 + fv-njs-boot 逻辑静态验证通过")

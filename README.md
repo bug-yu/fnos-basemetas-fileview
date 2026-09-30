@@ -553,8 +553,10 @@ showstatisticBarConfig: { count: false, view: false, zoom: true }
   和 Referer 取路径，于是不带 Referer 的 POST 会被放行。**这个问题真机已复现可利用**
   （普通用户可读出别人的私有文件，且带一个合法 Referer 也能照样绕）。
   现在由 njs 在鉴权阶段读取 body、把路径交给同一个闸门，不可读直接 403。
-  ⚠️ 依赖网关镜像带 njs：启动脚本会自动探测，带就用完整配置，不带则降级并打醒目 WARN
-  （应用仍能打开，但会明确告知保护已关闭）。查看当前模式：
+  ⚠️ njs 是动态模块，由**主配置** `app/docker/fv-main.main` 在 `main` 层 `load_module`
+  加载（写在 conf.d 片段里会报 `"load_module" directive is not allowed here`）。
+  镜像带不带 njs 不预设：启动脚本 `fv-njs-boot.sh` 会先探测 `.so` 实际位置再试加载，
+  确实没有就自动降级并打醒目 WARN（应用仍能打开，但会明确告知保护已关闭）。查看当前模式：
   ```bash
   docker logs basemetas-fileview-gateway 2>&1 | grep -i fv-njs-boot
   ```
@@ -663,8 +665,10 @@ mode=enforce   →   mode=log      # 退回「只记录不拦截」
 
   - 覆盖接口：`/localFile`、`/netFile`、`/status/poll`、`/password/unlock`、
     `/epub/resource`、`/convert/api/srvFile`；
-  - ⚠️ **需要网关镜像带 njs**。官方文档明确说过 `nginx:latest` 带；
-    启动脚本 `fv-njs-boot.sh` 会**自动探测**，带就用完整配置，不带就降级并打 WARN
+  - njs 由主配置 `app/docker/fv-main.main` 在 `main` 层 `load_module` 加载
+    （⚠️ 写在 conf.d 片段里会报 `"load_module" directive is not allowed here`，
+    这个错与镜像带不带 njs **无关**）。镜像带不带不预设：启动脚本 `fv-njs-boot.sh`
+    会先探测 `.so` 实际位置再试加载，确实没有就降级并打 WARN
     （应用仍能打开，但会明确告知"body 路径保护已关闭"）。看当前模式：
     ```bash
     docker logs basemetas-fileview-gateway 2>&1 | grep -i fv-njs-boot

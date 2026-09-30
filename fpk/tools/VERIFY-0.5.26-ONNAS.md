@@ -7,25 +7,35 @@
 
 ---
 
-## 0. 关键设计：**不赌镜像，自带降级**
+## 0. 关键设计：**自带主配置 + 不赌镜像**
 
-`load_module modules/ngx_http_js_module.so;` 加载失败会让 nginx 以 `[emerg]` 退出 →
-**整个应用打不开**。而"官方镜像到底带不带 njs"，文档只明确承诺过 `nginx:latest`
-（`docker run nginx:latest /usr/bin/njs -V`），alpine 变体与版本标签都没承诺。
+njs 是**动态模块**，必须用 `load_module` 加载，而该指令的合法上下文是
+**`main`（主配置顶层）** —— 不能写在被 `http{}` include 的片段里。
+所以本项目自带一份主配置 `app/docker/fv-main.main`：
 
-所以本版**不依赖镜像选择**：gateway 的启动命令改为 `sh /etc/nginx/conf.d/fv-njs-boot.sh`，
-它在启动前用 `nginx -t`（**不带 `-c`**，走镜像默认主配置）实测：
-- **能加载** → 直接用镜像默认主配置启动（body 路径保护 **开启**）
-- **不能** → 把 `conf.d` 复制到 `/tmp`、剥掉 njs 指令，用一份临时主配置
-  （`events{} + http{ include /tmp/fv-conf.d/*.conf; }`）启动
-  （回到 0.5.25 的防护水平，**应用仍能正常打开**），同时打醒目 WARN
+```nginx
+load_module modules/ngx_http_js_module.so;   # ← main 层，唯一合法位置
+events { worker_connections 1024; }
+http   { include /etc/nginx/conf.d/*.conf; }  # ← 业务片段在这里（http 上下文）
+```
+
+`load_module` 失败会让 nginx 以 `[emerg]` 退出 → **整个应用打不开**。
+所以 gateway 启动走 `sh /etc/nginx/conf.d/fv-njs-boot.sh`：
+
+- 先 `find` 定位 `ngx_http_js_module.so` 的**实际路径**，再逐一试常见路径；
+- **能加载** → 用 `fv-main.main` 启动（body 路径保护 **开启**）；
+- **不能** → 把 `conf.d` 复制到 `/tmp/fv-conf.d`、剥掉 njs 指令，
+  并把主配置里的 `include` 重写到该副本目录，然后启动
+  （回到 0.5.25 的防护水平，**应用仍能正常打开**），同时打醒目 WARN。
 
 > ⚠️ **不要**把 `nginx -c` 指向 `/etc/nginx/conf.d/nginx.conf`。那是 conf.d **片段**
-> （http 上下文，第 13 行就是 `map {}`），当主配置用会报
-> `[emerg] "map" directive is not allowed here ... :13` 并无限重启 ——
-> **0.5.26 首版就是这样翻车的**。正常路径必须**不带 `-c`**。
+> （http 上下文），当主配置用会报 `"map" directive is not allowed here` 并无限重启
+> —— **0.5.26 第一轮就是这样翻车的**。
+> ⚠️ 也**不要**把 `load_module` 写进片段里 —— 会报
+> `"load_module" directive is not allowed here`（**第二轮**翻车点）。
+> 两个错都与"镜像带不带 njs"无关，却都会被误判成"没有 njs"。详见 CHANGELOG。
 
-**先看这一行就知道处于哪个模式：**
+**先看这几行就知道处于哪个模式：**
 
 ```bash
 docker logs basemetas-fileview-gateway 2>&1 | grep -i 'fv-njs-boot' | head -20
@@ -33,9 +43,10 @@ docker logs basemetas-fileview-gateway 2>&1 | grep -i 'fv-njs-boot' | head -20
 
 | 日志 | 模式 | 含义 |
 |---|---|---|
-| `njs 可用，使用镜像默认主配置启动（POST body 路径保护：**已开启**）` | 完整 | 保护生效 ✅ |
-| `看起来是镜像不含 njs。准备降级配置……` + `WARN：…无 body 路径保护…` | 降级 | **漏洞仍敞开**，需换镜像 ⚠️ |
-| `"map" directive is not allowed here` | **首版事故** | 见下方「历史故障」；本版应已消失 |
+| `在镜像里找到 njs 模块：<路径>` + `njs 可用…（POST body 路径保护：**已开启**）` | 完整 | 保护生效 ✅ |
+| `find 没有找到 ngx_http_js_module.so` + `WARN：…无 body 路径保护…` | 降级 | **漏洞仍敞开**，需换镜像 ⚠️ |
+| `"map" directive is not allowed here` | **第一轮事故** | 把片段当主配置了；本版应已消失 |
+| `"load_module" directive is not allowed here` | **第二轮事故** | 把 `load_module` 写进片段了；本版应已消失 |
 
 **如果是降级模式**：把 `docker-compose.yaml` 里 gateway 的 `image:` 改成官方文档
 确认带 njs 的 `nginx:latest`，然后 `docker restart basemetas-fileview-gateway`。
@@ -61,11 +72,13 @@ docker logs --tail 50 basemetas-fileview-gateway
 
 | 日志 | 含义 | 处理 |
 |---|---|---|
-| `"map" directive is not allowed here in /etc/nginx/conf.d/nginx.conf:13` | **0.5.26 首版的 bug**：把 conf.d 片段当主配置传给了 `-c` | 更新到修订版即可（正常路径不带 `-c`）；若已是最新版仍报这句，说明 boot 脚本被改坏 |
-| `dlopen() ".../ngx_http_js_module.so" failed` | 镜像无 njs | boot 脚本应已自动降级；若没降级，报告这个 case |
-| `unknown directive "js_import"` | 同上 | 同上 |
+| `"map" directive is not allowed here in .../nginx.conf:NN` | **第一轮 bug**：把 conf.d 片段当主配置传给了 `-c` | 更新到修订版；若已最新仍报，说明 boot 脚本被改坏 |
+| `"load_module" directive is not allowed here in .../nginx.conf:NN` | **第二轮 bug**：`load_module` 写进了片段（应在 main 层） | 更新到修订版；确认 `fv-main.main` 存在且启动 `-c` 指向它 |
+| `dlopen() ".../ngx_http_js_module.so" failed` | 镜像确实无 njs（真·该降级） | boot 脚本应已自动降级；若没降级，报告这个 case |
+| `unknown directive "js_import"` | 没加载 njs 却用了 js_* | 同上 |
 | `open() ".../body-path-guard.js" failed` | 脚本没挂进容器 | 确认 `${TRIM_APPDEST}/docker/` 下有 `body-path-guard.js` |
-| `[emerg] ... duplicate location` | 配置语法错 | `docker exec <gw> nginx -t` 看详情 |
+| `[emerg] ... duplicate location` | 配置语法错 | `docker exec <gw> nginx -t -c /etc/nginx/conf.d/fv-main.main` 看详情 |
+| 反复 `尝试加载 njs 模块：…` + `不行` | 所有候选路径都不通 | 手动查：`docker exec <gw> find / -name 'ngx_http_js_module.so' 2>/dev/null` |
 
 ---
 
@@ -144,18 +157,24 @@ echo 'mode=log' > "${TRIM_PKGVAR}/acl.conf"   # 路径以实际安装为准
 ```
 
 ```bash
-# ② 连 njs 一起停掉：把 compose 的 gateway.command 改回直启 nginx
-#    （这就是 0.5.25 及更早的做法 —— **不带 -c**，用镜像默认主配置，
-#      它自带 include /etc/nginx/conf.d/*.conf，天然把片段放进 http 上下文）
-command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -g 'daemon off;'"]
+# ② 连 njs 一起停掉：用降级主配置启动（脚本已生成，含被注释的 njs 指令）
+#    正常路径是 -c /etc/nginx/conf.d/fv-main.main（main 层加载 njs）
+#    降级路径是 -c /tmp/fv-conf.d/fv-main-fallback.conf（njs 已注释）
+command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -c /tmp/fv-conf.d/fv-main-fallback.conf -g 'daemon off;'"]
 ```
 
 > ⚠️ ② 等于**退回到 0.5.25 的有漏洞状态**（POST 绕过重新可用）。
 > 只在 njs 确实起不来、应用打不开时用，并尽快修回来。
+> 注意 `fv-main-fallback.conf` 要**先跑过一次 boot 脚本**才会生成（它在探到无 njs 时才写）。
+> 如果连它都没有，就临时手动剥：把 `fv-main.main` 复制出来、注释掉 `load_module` 与
+> 三个 `js_*` 指令，再 `-c` 指它。
 >
-> ⚠️⚠️ **千万不要写成 `nginx -c /etc/nginx/conf.d/nginx.conf`** ——
-> 那个文件是 **conf.d 片段**（http 上下文，第 13 行就是 `map {}`），不是主配置。
-> 当主配置用会立刻报
-> `[emerg] "map" directive is not allowed here in .../nginx.conf:13`
-> 然后容器无限重启。**0.5.26 首版正是这样翻车的**（见 CHANGELOG「0.5.26 修订」）。
-> 正确做法永远是不带 `-c`，或自己包一层 `events{} + http{}` 再 `include` 片段。
+> ⚠️⚠️ **两个绝对不能写的形式**：
+> - `nginx -c /etc/nginx/conf.d/nginx.conf` —— 那是 conf.d **片段**（http 上下文），
+>   当主配置用会报 `"map" directive is not allowed here`（**第一轮**翻车点）；
+> - 把 `load_module` 写回 `nginx.conf` 片段里 —— 会报
+>   `"load_module" directive is not allowed here`（**第二轮**翻车点）。
+>   它只能在主配置的 **main 层**（即 `fv-main.main` 那种文件里）。
+>
+> ✅ 正确形态：`-c` 指向一个**主配置**（含 `load_module`（main 层）+ `events{}` +
+> `http{ include ... }`），业务片段由它 include 进来。

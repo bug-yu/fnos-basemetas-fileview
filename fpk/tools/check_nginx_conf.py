@@ -45,6 +45,8 @@ KNOWN_PREFIXES = (
     # 这几个指令属于 ngx_http_js_module，不装该模块时 nginx -t 才会报错，
     # 本解析器认不出来，只能靠白名单放行（否则每次自检都刷 5 条假告警）。
     "load_module", "js_path", "js_import", "js_access", "js_content", "js_set",
+    # events 块内的指令（主配置 fv-main.main 用到）
+    "worker_connections", "accept_mutex", "multi_accept", "use",
 )
 
 

@@ -150,11 +150,15 @@ if [ -f "$BASE/app/docker/body-path-guard.js" ]; then
 else
   echo "   ❌ 缺少 app/docker/body-path-guard.js（方案 B 的核心）"; FAILED=1
 fi
-# ② nginx 必须加载 njs 并 js_import 守卫
-if grep -q 'load_module modules/ngx_http_js_module.so;' "$BASE/app/docker/nginx.conf"; then
-  echo "   ✅ nginx.conf 已 load_module njs"
+# ② 片段**必须没有** load_module（它属于 main 上下文），且必须 js_import 守卫
+#    ★ 这条断言曾经写反：原先要求片段里有 load_module ——
+#      而 load_module 的合法上下文是 main，写在 conf.d 片段里必然
+#      [emerg] "load_module" directive is not allowed here（0.5.26 真机故障）。
+#      现在 load_module 归主配置 fv-main.main 管（见 ⑨ 组断言）。
+if grep -qE '^[[:space:]]*load_module' "$BASE/app/docker/nginx.conf"; then
+  echo "   ❌ nginx.conf（conf.d 片段）里出现了 load_module —— 它必须放在 main 层"; FAILED=1
 else
-  echo "   ❌ nginx.conf 未加载 njs 模块"; FAILED=1
+  echo "   ✅ nginx.conf 片段里没有 load_module（load_module 归主配置管）"
 fi
 if grep -q 'js_import bodyguard from body-path-guard.js;' "$BASE/app/docker/nginx.conf"; then
   echo "   ✅ nginx.conf 已 js_import bodyguard"
@@ -229,27 +233,62 @@ else
   echo "   ❌ 降级脚本未处理 js_access（降级后仍会引用未加载的 njs → 起不来）"; FAILED=1
 fi
 
-# ★★ 0.5.26-r2 真机事故的回归断言：绝不能用 `nginx -c <conf.d 片段>` ★★
-# conf.d/nginx.conf 是 http 上下文的**片段**（第 13 行就是 `map {}`）。当主配置用会报
-#   [emerg] "map" directive is not allowed here in .../nginx.conf:13
-# 该错与 njs 无关 → 探测永远失败 → 必然崩 → 无限重启。必须保证：
-#   ① 正常路径用不带 -c 的 `exec nginx`（复用镜像主配置的 include conf.d/*.conf）
-#   ② 探测用不带 -c 的 `nginx -t`
-if grep -qE "^[[:space:]]*exec nginx -g 'daemon off;'" "$BASE/app/docker/fv-njs-boot.sh"; then
-  echo "   ✅ 正常路径用镜像默认主配置启动（exec nginx，不带 -c）"
+# ★★ 0.5.26 两轮真机事故的回归断言 ★★
+# 事故① 把 conf.d 片段当主配置传给 -c → "map" directive is not allowed here
+# 事故② 把 load_module 写进 conf.d 片段   → "load_module" directive is not allowed here
+# 两个错都与 njs 无关，却都被误判成"镜像不含 njs"而走了降级。
+# 现设计：自带主配置 fv-main.main（main 层放 load_module）+ 片段 nginx.conf（http 层放 js_*）。
+NJS_BOOT="$BASE/app/docker/fv-njs-boot.sh"
+NJS_MAIN="$BASE/app/docker/fv-main.main"
+NJS_FRAG="$BASE/app/docker/nginx.conf"
+
+# ① 主配置必须存在，且 load_module 在 main 层（顶层、不在 {} 内）
+if [ -f "$NJS_MAIN" ]; then
+  if awk 'BEGIN{d=0;f=0} {s=$0; sub(/#.*/,"",s); if (d==0 && s ~ /^[[:space:]]*load_module[[:space:]]/) f=1; d+=gsub(/\{/,"{",s)-gsub(/\}/,"}",s)} END{exit(f?0:1)}' "$NJS_MAIN"; then
+    echo "   ✅ 主配置 fv-main.main 在 main 层加载 njs（load_module 位置合法）"
+  else
+    echo "   ❌ fv-main.main 里 load_module 不在 main 层 —— 会被 include 到 http 里报错"; FAILED=1
+  fi
 else
-  echo "   ❌ 正常路径没有「不带 -c 的 exec nginx」—— 0.5.26 首版就是因此无限重启！"; FAILED=1
+  echo "   ❌ 缺少 app/docker/fv-main.main（njs 的 load_module 必须放主配置的 main 层）"; FAILED=1
 fi
-if grep -qE "^[[:space:]]*if ! nginx -t >" "$BASE/app/docker/fv-njs-boot.sh"; then
-  echo '   ✅ 探测用 `nginx -t`（不带 -c），与真实启动路径一致'
+
+# ② 片段里绝不能有 load_module（否则报 "load_module" directive is not allowed here）
+if grep -qE '^[[:space:]]*load_module[[:space:]]' "$NJS_FRAG"; then
+  echo "   ❌ conf.d/nginx.conf 里出现了 load_module —— 它在 http 上下文非法（事故②）"; FAILED=1
 else
-  echo '   ❌ 探测没有用不带 -c 的 `nginx -t`（测不到真实场景，会误判）'; FAILED=1
+  echo "   ✅ conf.d/nginx.conf 里没有 load_module（避免落在 http 上下文）"
 fi
-# 且绝不能把片段直接喂给 -c
-if grep -qE "nginx -t -c \"?\\\$ORIG|nginx -c \"?\\\$ORIG" "$BASE/app/docker/fv-njs-boot.sh"; then
-  echo "   ❌ 发现把 conf.d 片段当主配置（\$ORIG）传给 -c —— 会导致 map 报错 + 无限重启"; FAILED=1
+
+# ③ 启动脚本：探测与启动都用主配置，绝不把片段传给 -c
+if grep -qE 'MAIN_SRC="\$CONF_DIR/fv-main\.main"' "$NJS_BOOT"; then
+  echo "   ✅ 启动脚本以 fv-main.main 为主配置来源"
 else
-  echo "   ✅ 没有把 conf.d 片段当主配置传给 -c"
+  echo "   ❌ 启动脚本没有以 fv-main.main 为主配置来源"; FAILED=1
+fi
+if grep -qE 'nginx -t -c "\$MAIN"' "$NJS_BOOT"; then
+  echo "   ✅ 探测用 -c \"\$MAIN\"（主配置），与真实启动一致"
+else
+  echo "   ❌ 探测没有用主配置做 nginx -t"; FAILED=1
+fi
+if grep -qE 'nginx[^|]* -c "?\$?(ORIG|CONF_DIR/nginx\.conf)' "$NJS_BOOT"; then
+  echo "   ❌ 发现把 conf.d 片段传给 -c（事故①：map 报错 + 无限重启）"; FAILED=1
+else
+  echo "   ✅ 没有把 conf.d 片段传给 -c"
+fi
+
+# ④ 降级判据必须区分「位置非法」与「模块缺失」，否则会掩盖真错
+if grep -qE 'dlopen|not binary compatible' "$NJS_BOOT"; then
+  echo "   ✅ 降级判据只认「模块缺失」特征（dlopen / not binary compatible）"
+else
+  echo "   ❌ 降级判据没有检查「模块缺失」特征 —— 可能把配置错误也降级掉"; FAILED=1
+fi
+
+# ⑤ 主配置的 include 必须能被重写到副本目录（否则降级剥的副本不被读到）
+if grep -qE 'include[[:space:]]+\$\{?WORK\}?/\*\.conf' "$NJS_BOOT"; then
+  echo "   ✅ 启动脚本会把 include 重写到副本目录（保证降级生效）"
+else
+  echo "   ❌ 启动脚本没有把 include 重写到副本目录 —— 降级改动不会生效"; FAILED=1
 fi
 
 # njs-boot 包裹逻辑单测（含"include 展开后 map 落在 http 内"的决定性验证）

@@ -54,15 +54,16 @@ services:
 
   # 统一网关适配层：监听 Unix Socket，转发给 FileView
   gateway:
-    # ⚠️ 0.5.26 起 nginx.conf 里用了 njs（load_module / js_import / js_access）来读取
-    #    POST body 里的路径，堵住「body 路径绕过」。**但镜像不一定自带 njs** ——
-    #    官方文档只明确说过 `nginx:latest` 带（`docker run nginx:latest /usr/bin/njs -V`），
-    #    并没有确认过 alpine 变体；而 `load_module` 加载失败会让 nginx **直接起不来**，
-    #    整个应用打不开。
+    # ⚠️ 0.5.26 起用 njs 读取 POST body 里的路径，堵住「body 路径绕过」高危缺口。
+    #    njs 是**动态模块**，必须由 `load_module` 加载，而该指令**只能出现在主配置
+    #    顶层（main 上下文）** —— 不能写在被 http{} include 的片段里。
+    #    所以本项目自带一份主配置 app/docker/fv-main.main（名字故意不用 .conf，
+    #    以免被镜像主配置的 `include conf.d/*.conf` 误收），由启动脚本 `-c` 指定它。
     #
-    #    所以这里**不赌镜像**：启动命令里先探测 njs 能不能加载，
-    #    不能就自动生成一份去掉 njs 的配置再启动（详见下面的 fv-njs-boot.sh）。
-    #    探测结果会写进日志，日志里能看到当前处于哪个模式。
+    #    但"镜像带不带 njs"无法预先确定 → `load_module` 失败会让 nginx 起不来、
+    #    整个应用打不开。所以启动走 fv-njs-boot.sh：逐个候选路径试加载，
+    #    实在没有就自动降级（剥掉 njs 指令）并打醒目 WARN，绝不让应用打不开。
+    #    当前处于哪个模式，看：docker logs <gw> 2>&1 | grep -i fv-njs-boot
     #
     # 用 debian 版（默认标签）而不是 alpine：官方文档给出 njs 用法示例用的就是默认镜像。
     image: nginx:1.27
@@ -74,15 +75,12 @@ services:
     # already in use) 并退出，配合 restart: unless-stopped 变成无限重启。
     # umask 000 让新建的 socket 可被飞牛网关进程连接。
     #
-    # 启动走 fv-njs-boot.sh：它会先用 `nginx -t`（**不带 -c**，即走镜像默认主配置）
-    # 实测含 njs 的配置能不能加载，不能就自动降级成去掉 njs 的配置再启动
-    # （避免"镜像没 njs → nginx 起不来 → 整个应用打不开"）。日志里会打印当前模式。
-    #
     # ⚠️ 为什么探测/启动**不能**写成 `nginx -c /etc/nginx/conf.d/nginx.conf`：
-    #    那个文件是 **conf.d 片段**（内容是 http 块上下文，第 13 行就是 `map {}`），
-    #    不是主配置。当主配置用时 `map` 会落在 http 之外，nginx 直接报
-    #      [emerg] "map" directive is not allowed here in .../nginx.conf:13
+    #    那个文件是 **conf.d 片段**（内容是 http 块上下文），不是主配置。
+    #    当主配置用时 `map` 会落在 http 之外，nginx 直接报
+    #      [emerg] "map" directive is not allowed here in .../nginx.conf:NN
     #    —— 这个错与 njs 无关，会让探测**永远失败**、必然崩、无限重启。
+    #    正确做法是 `-c /etc/nginx/conf.d/fv-main.main`（我们的主配置）。
     #    正常路径就该用镜像默认主配置（它自带 include /etc/nginx/conf.d/*.conf），
     #    天然把我们的片段放进 http 上下文。
     command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec sh /etc/nginx/conf.d/fv-njs-boot.sh"]
