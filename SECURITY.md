@@ -87,17 +87,36 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 **攻击链（威胁模型内）**：已登录用户 A，构造 `POST /preview/api/localFile`，body 带 B 的私有 `/vol` 路径、
 **不带 Referer** → 闸门落到「未解析到路径（放行）」→ 引擎读该文件返回预览。
 
+#### 攻击面清单（2026-09-30 三接口源码复核，见 [`POST-BYPASS-VERDICT.md`](fpk/tools/POST-BYPASS-VERDICT.md)）
+
+| 接口 | 路径字段 | 性质 | 校验缺口 |
+|---|---|---|---|
+| `POST /preview/api/localFile` | `srcRelativePath` | **读** | `@SecurePath` 不挡绝对路径；无根目录收敛 |
+| `POST /convert/api/srvFile` | `filePath` / `targetPath` | **读 + 写** | `validateFileNameAndPath()` 只校验后缀与转换组合，**完全不校验根目录** |
+| `POST /preview/api/password/unlock` | `originalFilePath` | **探测** | 无校验；`7zz t` 退出码可区分「密码错/文件不存在」；旧式加密格式无法判定时 `return true` 放行 |
+
+> 其中 `srvFile` 是**以 root 写任意可写路径**（含 `@appdata` 配置目录），比只读的 `localFile` 更重；
+> `password/unlock` 是**他人文件存在性探测**的辅助信道。
+
+#### 真机验证状态
+
+- **源码层：已坐实**（闸门放行分支 + nginx `auth_request` 读不到 body + 引擎无根目录收敛，三层独立验证）。
+- **端到端：待真机确认**。⚠️ 2026-09-29 首轮浏览器验证（`[1]=403 / [2]=404 / [3]=null`）
+  **是无效证据**：脚本自动伪造了一个不存在的路径 → 只能拿到引擎的 404，而 **404 恰恰说明闸门已放行**；
+  `[3]=null` 是因为 `PUBLIC` 留空被整段跳过。**判读矩阵已更正为：403=闸门拦；404/400/500=闸门已放行；200=绕过成立。**
+- 工具：`fpk/tools/probe_post_bypass_console.js`（v2，浏览器无终端可用，含前置自检）、
+  `fpk/tools/probe_post_bypass_curl.sh`（管理员终端）、`fpk/tools/probe_post_bypass_e2e.py`。
+
 **修复方案**（按稳健性，详见复核报告）：
 
 - **A（推荐，需真机先验）**：对 `/localFile`、`/netFile`、`/convert/api/srvFile`、`/password/unlock`
   这几个「路径在 body」的接口，闸门**解析不到路径时拒绝**（fail-closed 而非 fail-open）。
   正常流程一定有 Referer（上游未设 `referrerPolicy` / `Referrer-Policy`），且 Referer 的 query 里有路径。
-  **局限**：挡不住「用合法 Referer 掩护非法 body」。
+  **局限**：挡不住「用合法 Referer 掩护非法 body」。**方案 A 是"无 Referer"这一类的兜底，不是完整修复。**
 - **B（彻底）**：用 njs / OpenResty 在鉴权阶段读 body。复杂度显著上升。
+  若真机 `[3]`（合法 Referer 掩护）返回 200，则**必须上 B**。
 - **C**：飞牛开放 API —— 实测走不通，不作方案。
 - **D**：网关直接 deny 这几个 POST —— **不可行**（正常流程也是 POST，会打断预览）。
-
-**待验证**：端到端可利用性需真机确认 —— `fpk/tools/probe_post_bypass_e2e.py`（需 NAS 登录态）。
 
 ### ✅ 7. 静态资源不判定 —— 准确（设计如此）
 
@@ -134,8 +153,9 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 
 ### 待办（未做，按优先级）
 
-1. 🔴 **POST body 路径判定**（审计 #6，**已升级为高危**）：见上面 §6。需先真机验证
-   （`probe_post_bypass_e2e.py`），再决定方案 A 还是 A+B。**这是当前最大的未修缺口。**
+1. 🔴 **POST body 路径判定**（审计 #6，**已升级为高危**）：见上面 §6。
+   **源码层已坐实（3 个接口）**；剩端到端真机确认，再决定方案 A 还是 A+B。
+   **这是当前最大的未修缺口。**
 2. **`acl` 容器挂载收敛**：当前挂宿主 `/etc/passwd`、`/etc/group`（只读）。可评估是否可以缩到只挂必要字段 / 用 nss-wrapper，减少信息暴露。收益有限，暂缓。
 3. **引擎镜像升级流程**：锁 digest 后升级要**同时改标签和 digest**。查 digest：
    ```bash
