@@ -41,6 +41,10 @@ KNOWN_PREFIXES = (
     "auth_request", "internal", "proxy_pass_request_body", "proxy_method",
     # 静态补丁文件 fv-web-patch.js 用 alias 指到挂进来的 conf.d 目录
     "alias",
+    # njs（NGINX JavaScript）——POST body 路径判定用到（见 app/docker/body-path-guard.js）。
+    # 这几个指令属于 ngx_http_js_module，不装该模块时 nginx -t 才会报错，
+    # 本解析器认不出来，只能靠白名单放行（否则每次自检都刷 5 条假告警）。
+    "load_module", "js_path", "js_import", "js_access", "js_content", "js_set",
 )
 
 
