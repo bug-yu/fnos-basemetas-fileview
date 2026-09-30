@@ -74,11 +74,17 @@ services:
     # already in use) 并退出，配合 restart: unless-stopped 变成无限重启。
     # umask 000 让新建的 socket 可被飞牛网关进程连接。
     #
-    # 启动走 fv-njs-boot.sh：它会先用 `nginx -t` 实测含 njs 的配置能不能加载，
-    # 不能就自动降级成去掉 njs 的配置再启动（避免"镜像没 njs → nginx 起不来 →
-    # 整个应用打不开"）。日志里会打印当前模式。
-    # nginx 默认读 /etc/nginx/nginx.conf，而我们这份配置在 conf.d/ 下，
-    # 所以包装脚本用 `nginx -c <file>` 显式指定，不依赖主配置的 include。
+    # 启动走 fv-njs-boot.sh：它会先用 `nginx -t`（**不带 -c**，即走镜像默认主配置）
+    # 实测含 njs 的配置能不能加载，不能就自动降级成去掉 njs 的配置再启动
+    # （避免"镜像没 njs → nginx 起不来 → 整个应用打不开"）。日志里会打印当前模式。
+    #
+    # ⚠️ 为什么探测/启动**不能**写成 `nginx -c /etc/nginx/conf.d/nginx.conf`：
+    #    那个文件是 **conf.d 片段**（内容是 http 块上下文，第 13 行就是 `map {}`），
+    #    不是主配置。当主配置用时 `map` 会落在 http 之外，nginx 直接报
+    #      [emerg] "map" directive is not allowed here in .../nginx.conf:13
+    #    —— 这个错与 njs 无关，会让探测**永远失败**、必然崩、无限重启。
+    #    正常路径就该用镜像默认主配置（它自带 include /etc/nginx/conf.d/*.conf），
+    #    天然把我们的片段放进 http 上下文。
     command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec sh /etc/nginx/conf.d/fv-njs-boot.sh"]
     depends_on:
       - fileview

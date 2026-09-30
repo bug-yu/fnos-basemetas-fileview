@@ -229,6 +229,39 @@ else
   echo "   ❌ 降级脚本未处理 js_access（降级后仍会引用未加载的 njs → 起不来）"; FAILED=1
 fi
 
+# ★★ 0.5.26-r2 真机事故的回归断言：绝不能用 `nginx -c <conf.d 片段>` ★★
+# conf.d/nginx.conf 是 http 上下文的**片段**（第 13 行就是 `map {}`）。当主配置用会报
+#   [emerg] "map" directive is not allowed here in .../nginx.conf:13
+# 该错与 njs 无关 → 探测永远失败 → 必然崩 → 无限重启。必须保证：
+#   ① 正常路径用不带 -c 的 `exec nginx`（复用镜像主配置的 include conf.d/*.conf）
+#   ② 探测用不带 -c 的 `nginx -t`
+if grep -qE "^[[:space:]]*exec nginx -g 'daemon off;'" "$BASE/app/docker/fv-njs-boot.sh"; then
+  echo "   ✅ 正常路径用镜像默认主配置启动（exec nginx，不带 -c）"
+else
+  echo "   ❌ 正常路径没有「不带 -c 的 exec nginx」—— 0.5.26 首版就是因此无限重启！"; FAILED=1
+fi
+if grep -qE "^[[:space:]]*if ! nginx -t >" "$BASE/app/docker/fv-njs-boot.sh"; then
+  echo '   ✅ 探测用 `nginx -t`（不带 -c），与真实启动路径一致'
+else
+  echo '   ❌ 探测没有用不带 -c 的 `nginx -t`（测不到真实场景，会误判）'; FAILED=1
+fi
+# 且绝不能把片段直接喂给 -c
+if grep -qE "nginx -t -c \"?\\\$ORIG|nginx -c \"?\\\$ORIG" "$BASE/app/docker/fv-njs-boot.sh"; then
+  echo "   ❌ 发现把 conf.d 片段当主配置（\$ORIG）传给 -c —— 会导致 map 报错 + 无限重启"; FAILED=1
+else
+  echo "   ✅ 没有把 conf.d 片段当主配置传给 -c"
+fi
+
+# njs-boot 包裹逻辑单测（含"include 展开后 map 落在 http 内"的决定性验证）
+if [ -f "$(dirname "$0")/test_njs_boot.py" ]; then
+  NB_PY="$(command -v python3 || command -v python || true)"
+  if [ -n "$NB_PY" ] && "$NB_PY" "$(dirname "$0")/test_njs_boot.py" >/dev/null 2>&1; then
+    echo "   ✅ fv-njs-boot 包裹逻辑单测通过"
+  else
+    echo "   ❌ fv-njs-boot 包裹逻辑单测失败（跑 $(dirname "$0")/test_njs_boot.py 看详情）"; FAILED=1
+  fi
+fi
+
 # 闸门判定矩阵单测
 if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3 || command -v python)"

@@ -14,10 +14,16 @@
 （`docker run nginx:latest /usr/bin/njs -V`），alpine 变体与版本标签都没承诺。
 
 所以本版**不依赖镜像选择**：gateway 的启动命令改为 `sh /etc/nginx/conf.d/fv-njs-boot.sh`，
-它在启动前用 `nginx -t` 实测：
-- **能加载** → 用原配置（body 路径保护 **开启**）
-- **不能** → 自动生成一份注释掉 njs 指令的配置到 `/tmp/nginx-no-njs.conf` 并用它启动
+它在启动前用 `nginx -t`（**不带 `-c`**，走镜像默认主配置）实测：
+- **能加载** → 直接用镜像默认主配置启动（body 路径保护 **开启**）
+- **不能** → 把 `conf.d` 复制到 `/tmp`、剥掉 njs 指令，用一份临时主配置
+  （`events{} + http{ include /tmp/fv-conf.d/*.conf; }`）启动
   （回到 0.5.25 的防护水平，**应用仍能正常打开**），同时打醒目 WARN
+
+> ⚠️ **不要**把 `nginx -c` 指向 `/etc/nginx/conf.d/nginx.conf`。那是 conf.d **片段**
+> （http 上下文，第 13 行就是 `map {}`），当主配置用会报
+> `[emerg] "map" directive is not allowed here ... :13` 并无限重启 ——
+> **0.5.26 首版就是这样翻车的**。正常路径必须**不带 `-c`**。
 
 **先看这一行就知道处于哪个模式：**
 
@@ -27,8 +33,9 @@ docker logs basemetas-fileview-gateway 2>&1 | grep -i 'fv-njs-boot' | head -20
 
 | 日志 | 模式 | 含义 |
 |---|---|---|
-| `njs 可用，使用完整配置（POST body 路径保护：**已开启**）` | 完整 | 保护生效 ✅ |
-| `WARN：网关镜像不含 njs，已降级为**无 body 路径保护**的配置` | 降级 | **漏洞仍敞开**，需换镜像 ⚠️ |
+| `njs 可用，使用镜像默认主配置启动（POST body 路径保护：**已开启**）` | 完整 | 保护生效 ✅ |
+| `看起来是镜像不含 njs。准备降级配置……` + `WARN：…无 body 路径保护…` | 降级 | **漏洞仍敞开**，需换镜像 ⚠️ |
+| `"map" directive is not allowed here` | **首版事故** | 见下方「历史故障」；本版应已消失 |
 
 **如果是降级模式**：把 `docker-compose.yaml` 里 gateway 的 `image:` 改成官方文档
 确认带 njs 的 `nginx:latest`，然后 `docker restart basemetas-fileview-gateway`。
@@ -54,6 +61,7 @@ docker logs --tail 50 basemetas-fileview-gateway
 
 | 日志 | 含义 | 处理 |
 |---|---|---|
+| `"map" directive is not allowed here in /etc/nginx/conf.d/nginx.conf:13` | **0.5.26 首版的 bug**：把 conf.d 片段当主配置传给了 `-c` | 更新到修订版即可（正常路径不带 `-c`）；若已是最新版仍报这句，说明 boot 脚本被改坏 |
 | `dlopen() ".../ngx_http_js_module.so" failed` | 镜像无 njs | boot 脚本应已自动降级；若没降级，报告这个 case |
 | `unknown directive "js_import"` | 同上 | 同上 |
 | `open() ".../body-path-guard.js" failed` | 脚本没挂进容器 | 确认 `${TRIM_APPDEST}/docker/` 下有 `body-path-guard.js` |
@@ -137,9 +145,17 @@ echo 'mode=log' > "${TRIM_PKGVAR}/acl.conf"   # 路径以实际安装为准
 
 ```bash
 # ② 连 njs 一起停掉：把 compose 的 gateway.command 改回直启 nginx
-command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -c /etc/nginx/conf.d/nginx.conf -g 'daemon off;'"]
+#    （这就是 0.5.25 及更早的做法 —— **不带 -c**，用镜像默认主配置，
+#      它自带 include /etc/nginx/conf.d/*.conf，天然把片段放进 http 上下文）
+command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -g 'daemon off;'"]
 ```
 
 > ⚠️ ② 等于**退回到 0.5.25 的有漏洞状态**（POST 绕过重新可用）。
 > 只在 njs 确实起不来、应用打不开时用，并尽快修回来。
-> 注意：因为配置在 `conf.d/` 下而非默认主配置路径，**必须带 `-c`**。
+>
+> ⚠️⚠️ **千万不要写成 `nginx -c /etc/nginx/conf.d/nginx.conf`** ——
+> 那个文件是 **conf.d 片段**（http 上下文，第 13 行就是 `map {}`），不是主配置。
+> 当主配置用会立刻报
+> `[emerg] "map" directive is not allowed here in .../nginx.conf:13`
+> 然后容器无限重启。**0.5.26 首版正是这样翻车的**（见 CHANGELOG「0.5.26 修订」）。
+> 正确做法永远是不带 `-c`，或自己包一层 `events{} + http{}` 再 `include` 片段。
