@@ -245,21 +245,70 @@ class Handler(BaseHTTPRequestHandler):
         return True, "不可读（当前 mode=log，仅记录）", path
 
     def _handle(self):
-        if not self.path.startswith("/check"):
-            self.send_response(404)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
+        # ── 入口 A：/check —— 供 nginx `auth_request` 调用 ──────────────────
+        #   路径来源：X-Acl-Path / X-Acl-File（query 串）或 Referer 的 query。
+        #   ⚠️ 看不到 POST body —— 这是 auth_request 的固有限制。
+        if self.path.startswith("/check"):
+            uid = (self.headers.get("X-Acl-Uid") or "").strip()
+            uri = self.headers.get("X-Acl-Uri") or ""
+            ref = (self.headers.get("X-Acl-Ref") or "").strip()
+            allow, why, path = self._decide(uid, uri, ref)
+            return self._reply(allow, uid, path, why, uri, "check")
 
-        uid = (self.headers.get("X-Acl-Uid") or "").strip()
-        uri = self.headers.get("X-Acl-Uri") or ""
-        ref = self.headers.get("X-Acl-Ref") or ""
-        allow, why, path = self._decide(uid, uri, ref)
+        # ── 入口 B：/check-body —— 供 njs `body-path-guard` 调用 ────────────
+        #   路径来源：URL 参数 path（由 njs 从 POST body 里解析出来后带过来）。
+        #   这是方案 B 的落点：让"只在 body 里带路径"的接口也能被判定。
+        #   判定逻辑**完全复用 _decide**，不另写一套 —— 单一事实来源。
+        if self.path.startswith("/check-body"):
+            qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            params = urllib.parse.parse_qs(qs, keep_blank_values=True)
+            uid = (params.get("uid") or [""])[0].strip()
+            path = (params.get("path") or [""])[0].strip()
+            if path and "%" in path:
+                try:
+                    path = urllib.parse.unquote(path)
+                except Exception:
+                    pass
 
+            allow, why = self._decide_body(uid, path)
+            return self._reply(allow, uid, path, why, self.path, "check-body")
+
+        # 其它路径一律 404
+        self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _reply(self, allow, uid, path, why, uri, entry):
         self.send_response(200 if allow else 403)
         self.send_header("Content-Length", "0")
         self.end_headers()
-        log("%s uid=%s path=%s —— %s | uri=%s" % ("放行" if allow else "拒绝", uid or "-", path or "-", why, uri))
+        log("%s [%s] uid=%s path=%s —— %s | uri=%s"
+            % ("放行" if allow else "拒绝", entry, uid or "-", path or "-", why, uri))
+
+    def _decide_body(self, uid, path):
+        """供 /check-body 用：路径是调用方（njs）已经解析好的，直接判定。
+
+        与 _decide 的差别只有一点：**没有 Referer 可退回** —— 因为这条入口的
+        调用方已经把 body 里的路径拿出来了，不需要也不应该再退回来源页
+        （否则又会变成"用合法 Referer 掩护非法 body"）。
+
+        返回 (是否放行, 原因)。
+        """
+        if not uid or not uid.isdigit():
+            return True, "缺 uid（放行）"
+        if not path:
+            return True, "未解析到路径（放行）"
+        if not path.startswith("/vol"):
+            return True, "非存储卷路径（放行）"
+
+        verdict = can_read(int(uid), path)
+        if verdict is None:
+            return True, "无法判定（放行）"
+        if verdict:
+            return True, "可读"
+        if current_mode() == "enforce":
+            return False, "不可读 → 拦截（路径取自请求体）"
+        return True, "不可读（当前 mode=log，仅记录）"
 
     def do_GET(self):
         self._handle()

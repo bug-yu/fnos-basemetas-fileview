@@ -54,7 +54,18 @@ services:
 
   # 统一网关适配层：监听 Unix Socket，转发给 FileView
   gateway:
-    image: nginx:alpine
+    # ⚠️ 0.5.26 起 nginx.conf 里用了 njs（load_module / js_import / js_access）来读取
+    #    POST body 里的路径，堵住「body 路径绕过」。**但镜像不一定自带 njs** ——
+    #    官方文档只明确说过 `nginx:latest` 带（`docker run nginx:latest /usr/bin/njs -V`），
+    #    并没有确认过 alpine 变体；而 `load_module` 加载失败会让 nginx **直接起不来**，
+    #    整个应用打不开。
+    #
+    #    所以这里**不赌镜像**：启动命令里先探测 njs 能不能加载，
+    #    不能就自动生成一份去掉 njs 的配置再启动（详见下面的 fv-njs-boot.sh）。
+    #    探测结果会写进日志，日志里能看到当前处于哪个模式。
+    #
+    # 用 debian 版（默认标签）而不是 alpine：官方文档给出 njs 用法示例用的就是默认镜像。
+    image: nginx:1.27
     container_name: basemetas-fileview-gateway
     restart: unless-stopped
     # ⚠️ 必须先删掉残留的 app.sock 再启动。
@@ -62,7 +73,13 @@ services:
     # 启动时不会自己清理已存在的 unix socket，一旦残留就 bind() failed (98: Address
     # already in use) 并退出，配合 restart: unless-stopped 变成无限重启。
     # umask 000 让新建的 socket 可被飞牛网关进程连接。
-    command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -g 'daemon off;'"]
+    #
+    # 启动走 fv-njs-boot.sh：它会先用 `nginx -t` 实测含 njs 的配置能不能加载，
+    # 不能就自动降级成去掉 njs 的配置再启动（避免"镜像没 njs → nginx 起不来 →
+    # 整个应用打不开"）。日志里会打印当前模式。
+    # nginx 默认读 /etc/nginx/nginx.conf，而我们这份配置在 conf.d/ 下，
+    # 所以包装脚本用 `nginx -c <file>` 显式指定，不依赖主配置的 include。
+    command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec sh /etc/nginx/conf.d/fv-njs-boot.sh"]
     depends_on:
       - fileview
     volumes:

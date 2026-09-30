@@ -125,9 +125,61 @@ def run():
         if not ok:
             print("        ❌ 期望 allow=%s path=%s" % (want_allow, want_path))
 
+    # ── 入口 B：_decide_body（供 njs /check-body 调用，方案 B）──────────────
+    #    与 _decide 的差别：路径是调用方解析好的，**没有 Referer 可退回**。
+    #    这正是堵「合法 Referer 掩护非法 body」的关键 —— 判定只认 body 里的路径。
+    print()
+    print("  ── 入口 B：/check-body（body 路径判定，方案 B）──")
+    body_cases = [
+        # (说明, uid, path, 期望 allow)
+        ("body 里的路径可读 → 放行（正常预览不能被误伤）",
+         "1000", "/vol1/ok.docx", True),
+
+        ("★ 核心修复：body 里的路径不可读 → 拦截",
+         "1000", "/vol2/secret.docx", False),
+
+        ("★ 合法 Referer 掩护场景：body 是不可读路径 → 仍然拦截（不退回 Referer）",
+         "1000", "/vol2/secret.docx", False),
+
+        ("非 /vol 路径（引擎内部产物）→ 放行",
+         "1000", "/opt/fileview/data/preview/x.pdf", True),
+
+        ("空路径 → 放行（与整体 fail-open 方向一致）",
+         "1000", "", True),
+
+        ("缺 uid → 放行（不因取不到身份拦人）",
+         "", "/vol2/secret.docx", True),
+
+        ("uid 非数字 → 放行",
+         "abc", "/vol2/secret.docx", True),
+
+        ("判定异常（can_read 返回 None）→ 放行",
+         "1000", "/vol2/unjudgeable.docx", True),
+    ]
+
+    # 让 /vol2/unjudgeable.docx 走「无法判定」分支
+    def fake_can_read2(uid, path):
+        if path == "/vol2/unjudgeable.docx":
+            return None
+        return path in readable
+
+    mod.can_read = fake_can_read2
+
+    h = FakeHandler(mod, FakeHeaders({}))
+    for desc, uid, path, want_allow in body_cases:
+        allow, why = mod.Handler._decide_body(h, uid, path)
+        ok = (allow == want_allow)
+        mark = "OK " if ok else "FAIL"
+        if not ok:
+            failed += 1
+        print("  %s  %s" % (mark, desc))
+        print("        -> %s | path=%s | %s" % ("放行" if allow else "拦截", path, why))
+        if not ok:
+            print("        ❌ 期望 allow=%s" % want_allow)
+
     print()
     if failed == 0:
-        print("✅ 闸门判定矩阵全部通过（%d 条）" % len(cases))
+        print("✅ 闸门判定矩阵全部通过（%d + %d 条）" % (len(cases), len(body_cases)))
     else:
         print("❌ 有 %d 条判定不符" % failed)
     return failed

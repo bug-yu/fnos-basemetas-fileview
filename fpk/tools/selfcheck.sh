@@ -13,7 +13,7 @@ fi
 
 echo
 echo "== bash -n 语法检查 =="
-for f in "$BASE"/cmd/* "$BASE"/app/docker/fv-volumes.sh; do
+for f in "$BASE"/cmd/* "$BASE"/app/docker/fv-volumes.sh "$BASE"/app/docker/fv-njs-boot.sh "$BASE"/app/docker/fv-acl-probe.sh; do
   [ -f "$f" ] || continue
   if bash -n "$f" 2>/dev/null; then echo "  OK   $(basename "$f")"; else echo "  FAIL $(basename "$f")"; bash -n "$f"; FAILED=1; fi
 done
@@ -141,6 +141,94 @@ if grep -q 'api-scope' "$BASE/config/resource" 2>/dev/null; then
 else
   echo "   ✅ 未使用的 api-scope 声明已删除"
 fi
+
+echo
+echo "-- 安全收紧断言（0.5.26：POST body 路径判定，方案 B）--"
+# ① njs 守卫脚本必须存在
+if [ -f "$BASE/app/docker/body-path-guard.js" ]; then
+  echo "   ✅ body-path-guard.js 存在"
+else
+  echo "   ❌ 缺少 app/docker/body-path-guard.js（方案 B 的核心）"; FAILED=1
+fi
+# ② nginx 必须加载 njs 并 js_import 守卫
+if grep -q 'load_module modules/ngx_http_js_module.so;' "$BASE/app/docker/nginx.conf"; then
+  echo "   ✅ nginx.conf 已 load_module njs"
+else
+  echo "   ❌ nginx.conf 未加载 njs 模块"; FAILED=1
+fi
+if grep -q 'js_import bodyguard from body-path-guard.js;' "$BASE/app/docker/nginx.conf"; then
+  echo "   ✅ nginx.conf 已 js_import bodyguard"
+else
+  echo "   ❌ nginx.conf 未 js_import bodyguard"; FAILED=1
+fi
+# ③ 主 location 与 SPA location 都必须挂 js_access（否则可被绕过走另一条 location）
+n_jsaccess="$(grep -c 'js_access bodyguard.guard;' "$BASE/app/docker/nginx.conf" || true)"
+if [ "${n_jsaccess:-0}" -ge 2 ]; then
+  echo "   ✅ js_access 已挂载（$n_jsaccess 处：主 location + SPA location）"
+else
+  echo "   ❌ js_access 只挂了 ${n_jsaccess:-0} 处，应至少 2 处（漏挂的 location 可被用来绕过）"; FAILED=1
+fi
+# ④ 闸门的 body 路径入口必须存在，且子请求 location 指向它
+if grep -q 'startswith("/check-body")' "$BASE/app/docker/fv-acl-gate.py"; then
+  echo "   ✅ 闸门已提供 /check-body 入口"
+else
+  echo "   ❌ 闸门缺少 /check-body 入口"; FAILED=1
+fi
+if grep -q 'proxy_pass http://aclgate/check-body;' "$BASE/app/docker/nginx.conf"; then
+  echo "   ✅ nginx 子请求 location /__acl-body 指向闸门 /check-body"
+else
+  echo "   ❌ 缺少 location = /__acl-body"; FAILED=1
+fi
+# ⑤ /__acl-body 必须走 aclgate upstream（闸门挂了要 fail-open，不能硬编码 IP）
+if awk '/location = \/__acl-body/,/^    }/' "$BASE/app/docker/nginx.conf" | grep -q 'proxy_pass http://aclgate/check-body;'; then
+  echo "   ✅ /__acl-body 走 aclgate upstream（闸门不可用时 fail-open）"
+else
+  echo "   ❌ /__acl-body 未走 aclgate upstream（闸门挂掉会变成硬失败）"; FAILED=1
+fi
+# ⑥ 判定逻辑必须复用（_decide_body 内部调 can_read / current_mode），不能另写一套
+if awk '/def _decide_body/{f=1} f{print} f && /^        return True, "不可读（当前 mode=log/{exit}' \
+     "$BASE/app/docker/fv-acl-gate.py" | grep -q 'can_read('; then
+  echo "   ✅ _decide_body 复用 can_read（判定单一事实来源）"
+else
+  echo "   ❌ _decide_body 未复用 can_read（可能另写了一套判定）"; FAILED=1
+fi
+# ⑦ js 语法（用 njs 或 node 任一可用的做检查；都没有就跳过）
+if command -v njs >/dev/null 2>&1; then
+  if njs -c "$BASE/app/docker/body-path-guard.js" >/dev/null 2>&1; then
+    echo "   ✅ body-path-guard.js 语法通过（njs）"
+  else
+    echo "   ❌ body-path-guard.js 语法错误（njs -c）"; FAILED=1
+  fi
+elif command -v node >/dev/null 2>&1; then
+  # node 不认 njs 的 export default 语法，包一层再检查
+  if node --input-type=module -e "$(cat "$BASE/app/docker/body-path-guard.js")" --check 2>/dev/null \
+     || node --check <(printf 'export default {};%s' "$(cat "$BASE/app/docker/body-path-guard.js")") 2>/dev/null; then
+    echo "   ✅ body-path-guard.js 语法通过（node 近似检查）"
+  else
+    echo "   ⚠️  node 无法校验 njs 语法，跳过（建议在网关容器里跑 njs -c）"
+  fi
+else
+  echo "   ⚠️  本机没有 njs/node，跳过 body-path-guard.js 语法检查"
+fi
+
+# ⑧ 降级保护：镜像没 njs 时不能让 nginx 起不来
+if [ -f "$BASE/app/docker/fv-njs-boot.sh" ]; then
+  echo "   ✅ fv-njs-boot.sh 存在（njs 不可用时自动降级）"
+else
+  echo "   ❌ 缺少 app/docker/fv-njs-boot.sh（镜像没 njs 会让 nginx 起不来 → 应用打不开）"; FAILED=1
+fi
+if grep -q 'fv-njs-boot.sh' "$BASE/app/docker/docker-compose.yaml"; then
+  echo "   ✅ gateway 启动命令已走 fv-njs-boot.sh"
+else
+  echo "   ❌ gateway 未使用 fv-njs-boot.sh（缺少 njs 降级保护）"; FAILED=1
+fi
+# 降级脚本必须真的会剥离 js_access（否则降级后 still 引用未加载的模块 → 起不来）
+if grep -q 'js_access' "$BASE/app/docker/fv-njs-boot.sh"; then
+  echo "   ✅ 降级脚本会处理 js_access"
+else
+  echo "   ❌ 降级脚本未处理 js_access（降级后仍会引用未加载的 njs → 起不来）"; FAILED=1
+fi
+
 # 闸门判定矩阵单测
 if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3 || command -v python)"

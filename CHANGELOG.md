@@ -6,6 +6,58 @@
 
 ---
 
+## 0.5.26
+
+堵上**「POST body 路径绕过」**高危缺口。这是本项目迄今最严重的一个问题：
+逐用户权限闸门**看不到请求体里的路径**，导致任意已登录用户可以让引擎把别人的私有文件读出来。
+
+- **问题**：FileView 的**主预览链路就是 POST**（`POST /preview/api/localFile`，路径在 body 的
+  `srcRelativePath`），而 nginx 的 `auth_request` 认证子请求**物理上读不到 body**
+  （配置里写死了 `proxy_pass_request_body off`）。闸门只从 query 串和 Referer 里找路径，
+  于是 POST 请求落到「未解析到路径（放行）」分支 —— 直接放行。
+- **为什么之前判成低风险是错的**：源码层读通了整条链 —— 引擎的 `@SecurePath` 校验器
+  **只挡 `..` 穿越、不禁止绝对路径**，到 `new File()` 之间**没有根目录收敛**，
+  所以 body 里直接写 `/vol2/<别人uid>/私密.docx` 就能读。
+- **真机已复现**（2026-09-30，普通用户会话）：
+
+  | 用例 | 结果 |
+  |---|---|
+  | GET 带私有路径（对照） | 403（闸门正常） |
+  | POST `/localFile` **无 Referer** | **200 → 绕过成立** |
+  | POST `/localFile` **带合法 Referer** | **200 → 掩护也成立** |
+
+  第三条是决定性的：攻击者**先打开一个自己有权读的文件**拿到合法 Referer，
+  再把 body 里的路径换成别人的 —— 闸门会拿 Referer 里那个合法路径判定并放行，
+  **body 里的非法路径根本没被看过**。
+  → 因此「无 Referer 就拒」这类 fail-closed 收紧**不管用**，必须让鉴权层真正读到 body。
+- **修法**：新增 `app/docker/body-path-guard.js`（njs），在主 location 上加 `js_access`：
+
+  ```
+  js_access bodyguard.guard       ← 先读 body、取路径、问闸门；不可读直接 403
+  auth_request /__acl             ← 原链路保留（负责 GET 的 query 路径与 Referer 退回）
+  proxy_pass http://fileview:80/  ← 两道都放行才转发
+  ```
+
+  - 只对「路径在 body 里」的接口生效（`/localFile`、`/netFile`、`/status/poll`、
+    `/password/unlock`、`/epub/resource`、`/convert/api/srvFile`），其余请求原样放过；
+  - 闸门新增 `GET /check-body` 入口，**复用同一套 `can_read` + `current_mode`**
+    （判定单一事实来源），但**不退回 Referer** —— 这正是堵住「合法 Referer 掩护」的关键；
+  - 闸门不可用 / body 非 JSON / 子请求异常 → **fail-open**，与原有 `upstream backup`
+    方向一致（宁可没保护，不把应用弄坏）；
+  - 主 location 与 SPA location **都挂了** `js_access`（少挂一处即可被绕过，自检有断言）。
+- **不赌镜像**：`load_module` 加载失败会让 nginx **起不来**，而"官方镜像带不带 njs"
+  文档只承诺过 `nginx:latest`。所以 gateway 的启动命令改为 `fv-njs-boot.sh`：
+  启动前用 `nginx -t` 实测，不能加载就**自动降级**成去掉 njs 的配置并打 WARN
+  （应用仍能打开，但会明确告知"body 路径保护已关闭"），绝不让应用打不开。
+- **验证**：`test_acl_decide.py` 从 12 条扩到 **20 条**（新增 8 条 body 路径判定，
+  含「合法 Referer 掩护场景仍拦截」）；`selfcheck.sh` 新增 7 + 3 条断言。
+  详见 `fpk/tools/POST-BYPASS-VERDICT.md` 与 `fpk/tools/VERIFY-0.5.26-ONNAS.md`。
+
+> 一并记录：`POST /convert/api/srvFile` 是**「读+写」**（`targetPath` 可控且引擎侧
+> 无根目录校验），当前被网关的 location 配置挡在门外（返回 nginx 的 404 而非引擎响应）。
+> 这是**配置遮蔽、不是引擎修复** —— 已在 njs 名单里预先纳入，一旦将来为别的功能加了
+> `/convert/` 转发，它会自动受闸门保护。
+
 ## 0.5.25
 
 按第三方安全审计逐条核对后，做掉四项「确认可行、且不改变正常行为」的收紧。

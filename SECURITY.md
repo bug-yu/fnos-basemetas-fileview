@@ -6,7 +6,7 @@
 2. **审计核对**：第三方审计报告 9 项逐条核对（含 2 处修正）
 3. **已实施 / 待办**：0.5.25 做了什么、还剩什么
 
-> 版本基线：`0.5.25`（引擎 `basemetas/fileview:1.5.2@sha256:ebcb1dc6…`）。
+> 版本基线：`0.5.26`（引擎 `basemetas/fileview:1.5.2@sha256:ebcb1dc6…`）。
 
 ---
 
@@ -69,11 +69,11 @@ GET /preview/api/file?filePath=/vol1/…/sample.docx       → 200
 
 **0.5.25 已修**：扩展名短路只在「请求自己没带 `/vol` 路径」时生效。带 `?filePath=/vol…` 或 `X-Acl-Path: /vol…` 的一律落到正常判定。12 条判定矩阵单测（`fpk/tools/test_acl_decide.py`）已并入自检。
 
-### 🔴 6. POST body 里的路径判定不到 —— 准确，**已升级为高危**（2026-09-29 复核）
+### 🔴 6. POST body 里的路径判定不到 —— 准确，**已升级为高危**，**0.5.26 已修**
 
 > ⚠️ **本条在 0.5.25 里被误判为「低优先级」，现已更正。** 详见
-> [`fpk/tools/POST-BYPASS-REVIEW.md`](fpk/tools/POST-BYPASS-REVIEW.md) 与
-> [`fpk/tools/probe_post_bypass.py`](fpk/tools/probe_post_bypass.py)。
+> [`fpk/tools/POST-BYPASS-REVIEW.md`](fpk/tools/POST-BYPASS-REVIEW.md)、
+> [`fpk/tools/POST-BYPASS-VERDICT.md`](fpk/tools/POST-BYPASS-VERDICT.md)。
 
 nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径」的接口无法由闸门判定路径。
 
@@ -98,25 +98,61 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 > 其中 `srvFile` 是**以 root 写任意可写路径**（含 `@appdata` 配置目录），比只读的 `localFile` 更重；
 > `password/unlock` 是**他人文件存在性探测**的辅助信道。
 
-#### 真机验证状态
+#### 真机验证结果（2026-09-30，**已验证可利用**）
 
-- **源码层：已坐实**（闸门放行分支 + nginx `auth_request` 读不到 body + 引擎无根目录收敛，三层独立验证）。
-- **端到端：待真机确认**。⚠️ 2026-09-29 首轮浏览器验证（`[1]=403 / [2]=404 / [3]=null`）
-  **是无效证据**：脚本自动伪造了一个不存在的路径 → 只能拿到引擎的 404，而 **404 恰恰说明闸门已放行**；
-  `[3]=null` 是因为 `PUBLIC` 留空被整段跳过。**判读矩阵已更正为：403=闸门拦；404/400/500=闸门已放行；200=绕过成立。**
-- 工具：`fpk/tools/probe_post_bypass_console.js`（v2，浏览器无终端可用，含前置自检）、
-  `fpk/tools/probe_post_bypass_curl.sh`（管理员终端）、`fpk/tools/probe_post_bypass_e2e.py`。
+用改进后的 `probe_post_bypass_console.js`（v2）在真机普通用户会话跑出：
 
-**修复方案**（按稳健性，详见复核报告）：
+| 用例 | 结果 | 含义 |
+|---|---|---|
+| `[0-a]` PRIVATE 自检 | **403** | 前提成立：该文件确实读不到 |
+| `[0-b]` PUBLIC 自检 | **200** | 对照有效：自己的文件能读 |
+| `[1]` GET 对照 | **403** | 闸门在正常工作 |
+| `[2]` POST 无 Referer | **200** | 🔴 **绕过成立**（核心证据） |
+| `[3]` POST 合法 Referer | **200** | 🔴🔴 **「合法 Referer 掩护非法 body」也成立** |
+| `[4]` POST `/convert/api/srvFile` | 404 | 网关未转发 `/convert/` 前缀 → 该面**未暴露**（是配置遮蔽，非引擎修复） |
 
-- **A（推荐，需真机先验）**：对 `/localFile`、`/netFile`、`/convert/api/srvFile`、`/password/unlock`
-  这几个「路径在 body」的接口，闸门**解析不到路径时拒绝**（fail-closed 而非 fail-open）。
-  正常流程一定有 Referer（上游未设 `referrerPolicy` / `Referrer-Policy`），且 Referer 的 query 里有路径。
-  **局限**：挡不住「用合法 Referer 掩护非法 body」。**方案 A 是"无 Referer"这一类的兜底，不是完整修复。**
-- **B（彻底）**：用 njs / OpenResty 在鉴权阶段读 body。复杂度显著上升。
-  若真机 `[3]`（合法 Referer 掩护）返回 200，则**必须上 B**。
-- **C**：飞牛开放 API —— 实测走不通，不作方案。
-- **D**：网关直接 deny 这几个 POST —— **不可行**（正常流程也是 POST，会打断预览）。
+**`[3]=200` 是决定性结论**：攻击者只要先打开一个自己有权读的文件拿到合法 Referer，
+再在 POST body 里放别人的私有路径 —— 闸门会拿 **Referer 里那个合法路径**判定并放行，
+**body 里的非法路径根本没被看过**。
+→ **这意味着 fail-closed（方案 A）不成立**（攻击者不需要不带 Referer），**必须走方案 B**。
+
+> 判读矩阵（上一轮曾读反）：`403`=闸门拦；`404/400/500`=**闸门已放行**（引擎层报错）；`200`=绕过成立。
+
+---
+
+#### 0.5.26 的修法（方案 B：让鉴权层看见 body）
+
+新增 `app/docker/body-path-guard.js`（njs），在主 location 上加 `js_access`：
+
+```
+js_access bodyguard.guard      ← 先读 body、取路径、问闸门；不可读直接 403
+auth_request /__acl            ← 原链路保留，负责 GET 的 query 路径与 Referer 退回
+proxy_pass http://fileview:80/ ← 只有上面两道都放行才转发
+```
+
+要点：
+
+- **njs 是 nginx 官方模块，官方 `nginx:alpine` 镜像自带**，无需换镜像；
+- 只对「路径在 body 里」的接口生效（`/localFile`、`/netFile`、`/status/poll`、
+  `/password/unlock`、`/epub/resource`、`/convert/api/srvFile`），其余请求原样放过；
+- 新入口 `GET /check-body` **复用闸门的 `can_read` + `current_mode`**（判定单一事实来源），
+  但**不退回 Referer** —— 这正是堵住「合法 Referer 掩护」的关键；
+- 闸门不可用 / body 非 JSON / 子请求异常 → **fail-open**，与 `auth_request` 的
+  `upstream backup` 方向一致（宁可没保护，不把应用弄坏）；
+- 主 location 与 SPA location **都挂了** `js_access`（少挂一处即可被绕过，自检有断言）。
+
+**自检**：`fpk/tools/selfcheck.sh` 新增 7 条断言（守卫脚本存在 / `load_module` njs /
+`js_import` / `js_access` 至少 2 处 / 闸门 `/check-body` 入口 / `location = /__acl-body` /
+判定复用 `can_read`）；`test_acl_decide.py` 从 12 条扩到 **20 条**（新增 8 条 body 路径判定，
+含「合法 Referer 掩护场景仍拦截」）。
+
+**残留风险（已知、未修）**：
+
+- `[4]` 暴露的 `POST /convert/api/srvFile` 是**「读+写」**（`targetPath` 可控且无根目录收敛），
+  当前被网关的 location 配置挡在门外（返回 nginx 的 404 而非引擎响应）。若以后为别的功能
+  加了 `/convert/` 转发，这个可写面会立刻暴露 —— 已在 njs 名单里预先纳入，届时自动受保护。
+- `POST /preview/api/status/poll` 只带 `fileId`，njs 取不到 `/vol` 路径 → 不额外判定，
+  仍走原 `auth_request` 链路（该接口本身不读文件，风险低）。
 
 ### ✅ 7. 静态资源不判定 —— 准确（设计如此）
 
@@ -136,6 +172,14 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 
 ## 3. 已实施 / 待办
 
+### 0.5.26 已实施（1 项，安全）
+
+| # | 项 | 位置 |
+|---|---|---|
+| E | **POST body 路径判定**（审计 #6，高危）：njs 在鉴权阶段读 body、把路径交给闸门 | `app/docker/body-path-guard.js`（新增）+ `nginx.conf` + `fv-acl-gate.py`（新增 `/check-body`） |
+
+自检新增 7 条断言；判定矩阵单测从 12 条扩到 20 条。
+
 ### 0.5.25 已实施（4 项，均不改变正常行为）
 
 | # | 项 | 位置 |
@@ -153,9 +197,9 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 
 ### 待办（未做，按优先级）
 
-1. 🔴 **POST body 路径判定**（审计 #6，**已升级为高危**）：见上面 §6。
-   **源码层已坐实（3 个接口）**；剩端到端真机确认，再决定方案 A 还是 A+B。
-   **这是当前最大的未修缺口。**
+1. 🟡 **`convert/api/srvFile` 的可写面**（**读+写**）：当前被网关 location 配置挡在门外
+   （返回 nginx 404），但那是**配置遮蔽而非引擎修复**。njs 名单里已预先纳入，
+   一旦为别的功能加了 `/convert/` 转发就会自动受闸门保护；引擎侧仍建议上游做根目录收敛。
 2. **`acl` 容器挂载收敛**：当前挂宿主 `/etc/passwd`、`/etc/group`（只读）。可评估是否可以缩到只挂必要字段 / 用 nss-wrapper，减少信息暴露。收益有限，暂缓。
 3. **引擎镜像升级流程**：锁 digest 后升级要**同时改标签和 digest**。查 digest：
    ```bash
