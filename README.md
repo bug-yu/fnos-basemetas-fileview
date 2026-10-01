@@ -6,7 +6,7 @@
 
 - **`.fpk` 原生安装** —— 应用中心「手动安装」上传即完成，带安装向导、启动/停止/设置，与飞牛自带「Office 预览」同一形态。
 - **统一网关接入** —— 不占用独立端口，复用系统访问域名（`/app/basemetas-fileview`），且网关会**先校验飞牛登录态**再转发。
-- **接管文件打开方式** —— 文件管理器右键出现「用 FileView 打开」，**在飞牛桌面窗口内打开**（不跳浏览器新标签页），覆盖 61 种飞牛没有原生能力的格式（DWG/DXF 图纸、OFD 版式、三维模型、压缩包、Visio、思维导图、PSD 等）。
+- **接管文件打开方式** —— 文件管理器右键出现「用 FileView 打开」，覆盖 61 种飞牛没有原生能力的格式（DWG/DXF 图纸、OFD 版式、三维模型、压缩包、Visio、思维导图、PSD 等）。打开方式可选：**在飞牛桌面窗口内**（默认）或**在浏览器标签页**，安装时二选一。
 - **只读挂载** —— 存储卷一律 `:ro`，预览不会改动 NAS 里的任何文件。
 
 ## 目录结构
@@ -16,7 +16,7 @@
 | `basemetas-fileview.fpk` | 安装包 —— **构建产物，不在仓库里**（`.gitignore` 排除）。用 `fpk/build.sh` 或 `build.bat` 现场生成，或从 [Releases](../../releases) 下载 |
 | `fpk/basemetas-fileview/` | 安装包工程源码（改配置改这里） |
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
-| `fpk/tools/` | 生成脚本与自检工具（`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
+| `fpk/tools/` | 生成脚本与自检工具（`build_variants.py`、`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
@@ -27,9 +27,20 @@
 
 ## 安装
 
-1. 应用中心 → 左下角「**手动安装**」→ 上传 `basemetas-fileview.fpk`
+Release 里提供**两个包**，功能完全一样，只差「打开方式」这一个设置 —— 按需选一个下载：
+
+| 包 | 打开方式 | 什么时候选它 |
+|---|---|---|
+| `basemetas-fileview-<版本>-desktop.fpk` | `iframe` | 右键「用 FileView 打开」**在飞牛桌面窗口内**打开预览页。默认推荐 —— 与飞牛自带「Office 预览」同一形态，不跳浏览器、不占标签页 |
+| `basemetas-fileview-<版本>-browser.fpk` | `url` | 同样从右键菜单进入，但在**浏览器新标签页**打开。想要完整浏览器能力（书签、多标签、插件），或桌面窗口里显示不正常时选它 |
+
+> ⚠️ **两个包的版本号相同**，而飞牛**不允许同版本覆盖安装** —— 想换成另一种打开方式，
+> 得先在应用中心**卸载**、再装另一个包（卸载不会删引擎镜像，重装很快）。
+> 除「打开方式」外，两者完全一致：同样的统一网关接入、逐用户权限闸门、只读挂载、61 种扩展名。
+
+1. 应用中心 → 左下角「**手动安装**」→ 上传你选的那个 `.fpk`
 2. 安装向导的「允许预览的存储卷」保持默认 `auto` 即可（自动挂载本机全部 `/volN`）
-3. 装完自动启动。文件管理器右键文件 → 「**用 FileView 打开**」（在飞牛桌面窗口内打开预览页）
+3. 装完自动启动。文件管理器右键文件 → 「**用 FileView 打开**」
 
 首次安装需拉取镜像，**耗时几分钟**；国内直连 Docker Hub 较慢，建议先配置镜像加速。卸载不会删除镜像，重装时直接复用。
 
@@ -75,6 +86,10 @@ python fpk/tools/gen_filetypes.py                 # 生成并覆盖 app/ui/confi
 > 不再新开浏览器标签页（与飞牛自带「Office 预览」同形态）。
 > `noDisplay: true` 保持不变 —— 入口只出现在文件右键菜单，不占桌面图标。
 > 这也是官方「注册文件打开方式」示例里的组合（`type: iframe` + `noDisplay: true`）。
+>
+> 两种打开方式**在安装时二选一**（见上面的[安装](#安装)）：源码里存的是 `iframe`（desktop 版），
+> `url`（browser 版）由 `fpk/tools/build_variants.py` 在打包时改这一个字段派生出来。
+> 做成两个包而不是运行时开关，是因为入口配置只在**安装时**读取、且飞牛不允许同版本覆盖安装。
 
 ### 请求链路
 
@@ -458,6 +473,24 @@ build.bat
 >
 > 单独跑：`bash fpk/tools/check_eol.sh`
 
+### 打「打开方式」的两个变体
+
+发布时要把 desktop / browser 两个包都产出来：
+
+```bash
+python fpk/tools/build_variants.py                 # 两个都打
+python fpk/tools/build_variants.py --only browser  # 只打某一个
+```
+
+产物落在仓库根目录：`basemetas-fileview-<版本>-desktop.fpk`、`basemetas-fileview-<版本>-browser.fpk`。
+
+脚本把源码**复制到临时目录**、只改入口 `type`、再调 fnpack 打包 —— **全程不动工作区**，
+所以中断也不会把 `url` 留在源码里（源码里 `app/ui/config` 永远是 `iframe`）。
+打包前同样跑一遍行尾检查（用 Python 二进制读判 `\r\n`，比 shell 里 `grep $'\r'` 可靠）。
+
+> 两个包**只差 `ui/config` 一个文件**（可用文件级 md5 比对确认，别用整包 md5 ——
+> 同一个目录重复打包，整包 md5 本来就会变）。
+
 ## 更新
 
 **就地升级**：改完配置或代码后，把 `manifest` 的 `version` 末位 +1、重新打包，然后在应用中心「手动安装」新版 `.fpk` 即可 —— **不需要先卸载**（飞牛靠版本号递增判断升级安装，走包里的 `cmd/upgrade_init` / `cmd/upgrade_callback`）。
@@ -481,7 +514,7 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
-| **0.5.26** | 文件打开方式改为**在飞牛桌面窗口内打开**（入口 `type` 由 `url` 改为 `iframe`）—— 右键「用 FileView 打开」不再跳浏览器新标签页 |
+| **0.5.26** | 「打开方式」做成**两个变体包，安装时二选一** —— `desktop` 版在飞牛桌面窗口内打开（`type: iframe`）、`browser` 版在浏览器标签页打开（`type: url`）；两包只差入口 `type` 一个字段 |
 | **0.5.25** | 安全收紧：权限闸门不再因 URI 后缀是 `.css` / `.png` 就放行（堵住 `file.css?filePath=/vol1/私密.docx` 这类旁路）；引擎镜像锁到 digest；`data` / `logs` / `fonts` 目录权限收到 `0700` |
 | **0.5.24** | Excel / CSV 恢复缩放控件（上游把 Luckysheet 统计栏整条藏了，缩放滑杆就在里面） |
 | **0.5.23** | 修带触摸的电脑上 PDF 没有工具栏（上游把触屏电脑误判成 iPad）；Excel 不能缩放是上游设计，未改动 |
