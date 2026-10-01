@@ -1,9 +1,10 @@
-# 0.5.26 上机验证清单（njs body 路径判定）
+# 上机验证清单（0.5.26 / 0.5.27 —— njs body 路径判定）
 
 > ⚠️ **本机（开发机）没有 Docker、WSL 被安全策略禁用**，因此 njs 的加载与运行
 > **未能在开发机上验证**。下面这些步骤必须在 NAS 上跑一遍。
 > 已完成的是：判定矩阵单测（20 条全绿）、nginx 配置静态结构检查、js 语法检查（node ESM）、
-> 降级脚本 `sed` 剥离逻辑实测、全部 shell 脚本 `bash -n`。
+> 降级脚本 `sed` 剥离逻辑实测、全部 shell 脚本 `bash -n`、
+> **降级判据分类单测（含"真机日志序列必须判成模块存在"的回归）**。
 
 ---
 
@@ -44,16 +45,27 @@ docker logs basemetas-fileview-gateway 2>&1 | grep -i 'fv-njs-boot' | head -20
 | 日志 | 模式 | 含义 |
 |---|---|---|
 | `在镜像里找到 njs 模块：<路径>` + `njs 可用…（POST body 路径保护：**已开启**）` | 完整 | 保护生效 ✅ |
-| `find 没有找到 ngx_http_js_module.so` + `WARN：…无 body 路径保护…` | 降级 | **漏洞仍敞开**，需换镜像 ⚠️ |
+| `find 没有找到 ngx_http_js_module.so` + `WARN：网关镜像不含 njs…` | 降级 | 镜像真没有 njs ⚠️ |
+| `在镜像里找到 njs 模块：…` **但** `unknown directive "js_access"` | 降级 | **第三轮事故**：镜像**有** njs，但**版本太旧**（需 >= 1.0.1）⚠️ |
 | `"map" directive is not allowed here` | **第一轮事故** | 把片段当主配置了；本版应已消失 |
 | `"load_module" directive is not allowed here` | **第二轮事故** | 把 `load_module` 写进片段了；本版应已消失 |
 
-**如果是降级模式**：把 `docker-compose.yaml` 里 gateway 的 `image:` 改成官方文档
-确认带 njs 的 `nginx:latest`，然后 `docker restart basemetas-fileview-gateway`。
-自查镜像是否带 njs：
+**如果处于降级模式**：换一个 **njs >= 1.0.1** 的网关镜像（本项目用 `nginx:1.31`），
+然后 `docker restart basemetas-fileview-gateway`。
+
+> ⚠️ 为什么必须是 **1.0.1**，而不是"任意带 njs 的版本"：
+> - `js_access` 自 **njs 0.9.9**（2026-05-19）才有 —— 更早的版本根本不认识这个指令；
+> - 而 **0.9.9 ~ 1.0.0 存在访问控制绕过漏洞 CVE-2026-18329**（异步读 body 抛异常时
+>   nginx 会当作检查通过继续处理），**njs 1.0.1**（2026-09-02）才修好。
+> - 官方 mainline 镜像自带 njs 1.0.1（其 Dockerfile `NJS_VERSION=1.0.1`）。
+
+自查某个镜像够不够新（在能跑 docker 的机器上）：
 
 ```bash
-docker run --rm nginx:latest /usr/bin/njs -V     # 有版本输出即可
+# 直接让 nginx 试着解析 js_access —— 最可靠
+docker run --rm nginx:1.31 sh -c 'printf "load_module modules/ngx_http_js_module.so;\nevents{}\nhttp{ js_access a.b; }\n" > /tmp/t.conf; nginx -t -c /tmp/t.conf'
+#   报 unknown directive "js_access"  → 太旧，不能用
+#   报别的（如找不到 a.b 模块）      → 指令可用 ✅
 ```
 
 ---

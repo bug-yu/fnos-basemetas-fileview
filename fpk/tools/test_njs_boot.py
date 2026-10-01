@@ -119,6 +119,58 @@ check("load_module\" directive is not allowed here" in boot
       "没有区分位置非法与文件缺失的提示")
 
 print()
+print("⑤b 分类逻辑：必须区分「模块缺失」与「模块在但版本旧」（2026-10-01 真机翻车点）")
+# ★ 从脚本里把 is_load_failure 抽出来用**真实函数**测（不是重新实现一遍正则）
+_fm = re.search(r"is_load_failure\(\)\s*\{(.*?)\n\}", boot, re.S)
+check(_fm is not None, "脚本里有 is_load_failure 函数",
+      "缺少 is_load_failure 函数")
+_func = _fm.group(1) if _fm else ""
+_pm = re.search(r"grep -qiE '([^']+)'", _func)
+check(_pm is not None, "能取出「文件缺失」特征正则", "取不出特征正则")
+_pat = _pm.group(1) if _pm else r"(?!x)x"
+
+
+def _is_load_failure(t):
+    return re.search(_pat, t, re.I) is not None
+
+
+# 真机日志原样序列（前 4 条：模块加载成功、卡在 js_access；后 3 条：兜底假路径 dlopen 失败）
+_real = [
+    '[emerg] unknown directive "js_access" in /tmp/fv-conf.d/nginx.conf:211',
+    '[emerg] unknown directive "js_access" in /tmp/fv-conf.d/nginx.conf:211',
+    '[emerg] unknown directive "js_access" in /tmp/fv-conf.d/nginx.conf:211',
+    '[emerg] unknown directive "js_access" in /tmp/fv-conf.d/nginx.conf:211',
+    '[emerg] dlopen() "/usr/share/nginx/modules/ngx_http_js_module.so" failed'
+    ' (No such file or directory)',
+    '[emerg] dlopen() "/usr/local/nginx/modules/ngx_http_js_module.so" failed'
+    ' (No such file or directory)',
+    '[emerg] dlopen() "/usr/local/lib/nginx/modules/ngx_http_js_module.so" failed'
+    ' (No such file or directory)',
+]
+check(any(not _is_load_failure(x) for x in _real),
+      "真机日志序列 → 判定「模块存在」（不再误报缺模块）✅",
+      "真机日志序列仍被误判成「缺模块」❌")
+
+# 旧 bug 回归：旧逻辑只看**最后一条**，而它恰好是 dlopen 失败 → 必然误判
+check(_is_load_failure(_real[-1]),
+      "（回归）最后一条日志确实是 dlopen 失败 —— 这正是旧逻辑必然降级的原因",
+      "最后一条日志不是 dlopen 失败，本测试前提已变")
+
+# 反向：镜像真的没有 njs 时，全部都是 dlopen → 仍应判「缺模块」（不能误伤）
+_absent = ['[emerg] dlopen() "/x/y.so" failed (No such file or directory)'] * 7
+check(not any(not _is_load_failure(x) for x in _absent),
+      "镜像真没 njs 时 → 仍判「缺模块」（不误伤）✅",
+      "镜像真没 njs 时被误判成「模块存在」❌")
+
+# 脚本必须把「是否加载成功过」累积下来，而不是只看最后一份日志
+check("SAW_LOADED" in boot,
+      "脚本累积「是否成功加载过」的证据（SAW_LOADED）",
+      "脚本没有累积证据，仍可能只看最后一份日志")
+check("unknown directive" in boot or "js_access" in boot,
+      "脚本对 js_access 版本问题给了专门诊断",
+      "脚本没有针对 js_access 的诊断")
+
+print()
 print("⑥ 探测 .so 真实路径（相对前缀不可靠，逐个候选试）")
 check("JS_SO_CANDIDATES" in boot, "有候选路径清单 JS_SO_CANDIDATES",
       "没有探测 .so 路径的逻辑")

@@ -112,8 +112,22 @@ try_with_so() {
 
 prepare_work
 
+# ★ 曾经的 bug：判据只看 /tmp/njs-t.log —— 而它**每轮都被覆盖**，循环结束后
+#   里面是**最后一个候选**的日志。最后几个候选是兜底假路径，必然 dlopen 失败，
+#   于是**即使真路径已把模块加载成功**，也会被判成"镜像不含 njs"。
+#   （真机现象：明明报的是 js_access 不认识，却打印"镜像确实没有 njs 模块"。）
+#   现在改为：逐个分类 + 累积证据 —— 只要有**任何一次**加载成功过，就不算缺模块。
 OK=0
 CHOSEN=""
+SAW_LOADED=0          # 出现过"模块加载成功"（报错不是 dlopen 类）
+LAST_LOAD_ERR=""      # 最后一次"模块文件加载失败"的报错
+CONFIG_ERR=""         # "模块加载成功但配置/版本有问题"的报错（最有价值）
+
+# 模块**文件**加载失败的特征；其余一律视为"模块已加载，问题在配置或版本"
+is_load_failure() {
+    grep -qiE 'dlopen|not binary compatible|cannot open shared object|No such file|module .* is not' "$1"
+}
+
 for so in $JS_SO_CANDIDATES; do
     [ -n "$so" ] || continue
     log "尝试加载 njs 模块：$so"
@@ -123,7 +137,14 @@ for so in $JS_SO_CANDIDATES; do
         CHOSEN="$so"
         break
     fi
-    log "   不行（$(grep -m1 -oE '\[emerg\].*' /tmp/njs-t.log || echo '见日志')）"
+    err="$(grep -m1 -oE '\[emerg\].*' /tmp/njs-t.log || echo '见日志')"
+    log "   不行（${err}）"
+    if is_load_failure /tmp/njs-t.log; then
+        LAST_LOAD_ERR="$err"
+    else
+        SAW_LOADED=1
+        CONFIG_ERR="$err"
+    fi
 done
 
 if [ "$OK" = "1" ]; then
@@ -131,21 +152,29 @@ if [ "$OK" = "1" ]; then
     exec nginx -c "$MAIN" -g 'daemon off;'
 fi
 
-log "所有候选路径都无法加载 njs 模块。最后一次的报错："
-sed 's/^/[fv-njs-boot]   /' /tmp/njs-t.log
+log "所有候选路径都没能让 nginx -t 通过。"
 
-# --- 是否真的该降级？只有"模块文件缺失"才降级 -------------------------------
-# 只有 (2) 类错误才降级；(1)(3) 是配置写错，降级只会掩盖问题。
-if grep -qiE 'dlopen|not binary compatible|cannot open shared object|No such file|module .* is not' /tmp/njs-t.log; then
+# --- 到底是"缺模块"还是"模块在但版本/配置不对" -------------------------------
+# 只有在**没有任何一次**加载成功过时，才认定为镜像真的缺 njs。
+if [ "$SAW_LOADED" != "1" ]; then
+    log "最后一次的报错（${LAST_LOAD_ERR:-见日志}）："
+    sed 's/^/[fv-njs-boot]   /' /tmp/njs-t.log
     log "看起来是镜像确实没有 njs 模块，准备降级配置……"
 else
-    log "❌ 失败原因**不是**模块缺失（报错里没有 dlopen / not binary compatible 之类）。"
-    log "    这多半是配置本身写错了 —— 降级不会解决，只会掩盖。"
-    log "    请检查报错行："
-    log "      · \"load_module\" directive is not allowed here → 它必须放在 main 层"
-    log "      · \"map\" directive is not allowed here        → 不要把 conf.d 片段当主配置"
-    log "    仍用主配置启动，让错误打全（容器会退出）。"
-    exec nginx -c "$MAIN" -g 'daemon off;'
+    log "❌ 镜像**有** njs 模块（至少有一个候选路径把它加载起来了），"
+    log "    失败原因是**配置或 njs 版本**，不是缺模块："
+    log "      ${CONFIG_ERR}"
+    case "$CONFIG_ERR" in
+      *js_access*)
+        log ""
+        log "    ★ 诊断：这个 njs 版本不认识 js_access 指令。"
+        log "      js_access 需要 njs >= 0.9.9（2026-05-19 才发布）。"
+        log "      ⚠️ 且 0.9.9 ~ 1.0.0 存在访问控制绕过漏洞 CVE-2026-18329，"
+        log "         njs >= 1.0.1 才修复 —— 目标应是 **njs >= 1.0.1**。"
+        ;;
+    esac
+    log ""
+    log "    → 仍然降级（否则应用起不来），但请记住：**是镜像太旧**，不是缺模块。"
 fi
 
 # --- 降级：注释掉 njs 相关指令 ----------------------------------------------
@@ -159,16 +188,22 @@ sed -e 's|^\([[:space:]]*\)js_path[[:space:]].*|\1# [fv-njs-boot] removed (no nj
 
 if nginx -t -c "$MAIN_FB" >/tmp/njs-t2.log 2>&1; then
     log "================================================================"
-    log "⚠️  WARN：网关镜像不含 njs，已降级为**无 body 路径保护**的配置。"
+    if [ "$SAW_LOADED" = "1" ]; then
+        log "⚠️  WARN：镜像**有 njs**，但这个 njs 版本用不了 —— 已降级为"
+        log "           **无 body 路径保护**的配置。"
+    else
+        log "⚠️  WARN：网关镜像不含 njs，已降级为**无 body 路径保护**的配置。"
+    fi
+    log ""
     log "    含义：「POST body 路径绕过」这个高危缺口**当前是敞开的** ——"
     log "    任意已登录用户可用 POST 读出别人的私有文件（详见 SECURITY.md §6）。"
     log ""
-    log "    修法二选一："
-    log "      a) 换一个带 njs 的镜像并重启本容器。自查（在能跑 docker 的机器上）："
-    log "             docker run --rm <image> find / -name 'ngx_http_js_module.so' 2>/dev/null"
-    log "         有输出即该镜像带 njs。"
-    log "      b) 若必须用当前镜像，则本项目暂不具备防护能力，"
-    log "         应改用网关级用户白名单限制可用人群。"
+    log "    修法：换一个 **njs >= 1.0.1** 的网关镜像并重启本容器。"
+    log "      · js_access 自 njs 0.9.9 才有；而 0.9.9 ~ 1.0.0 存在访问控制"
+    log "        绕过漏洞 CVE-2026-18329，njs 1.0.1 才修好。"
+    log "      · 换镜像后重启本容器，看上面几行日志即可判断："
+    log "          出现「POST body 路径保护：**已开启**」= 成功。"
+    log "          仍出现 js_access 报错 = 那个镜像的 njs 还不够新。"
     log ""
     log "    降级主配置：$MAIN_FB"
     log "================================================================"
@@ -177,5 +212,10 @@ fi
 
 log "❌ 降级配置语法检查也失败："
 sed 's/^/[fv-njs-boot]   /' /tmp/njs-t2.log
+log "    说明问题**不在 njs**（剥掉 njs 指令后仍不合法）—— 多半是配置本身写错了。"
+log "    请对照报错行："
+log "      · \"load_module\" directive is not allowed here → 它必须放在 main 层"
+log "      · \"map\"/\"server\" directive is not allowed here → 不要把 conf.d 片段当主配置"
+log "      · duplicate location / unexpected \"}\"          → 片段本身有语法错"
 log "    改用主配置启动，请把上面日志发出来定位。"
 exec nginx -c "$MAIN" -g 'daemon off;'

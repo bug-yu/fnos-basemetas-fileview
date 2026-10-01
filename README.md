@@ -555,8 +555,10 @@ showstatisticBarConfig: { count: false, view: false, zoom: true }
   现在由 njs 在鉴权阶段读取 body、把路径交给同一个闸门，不可读直接 403。
   ⚠️ njs 是动态模块，由**主配置** `app/docker/fv-main.main` 在 `main` 层 `load_module`
   加载（写在 conf.d 片段里会报 `"load_module" directive is not allowed here`）。
-  镜像带不带 njs 不预设：启动脚本 `fv-njs-boot.sh` 会先探测 `.so` 实际位置再试加载，
-  确实没有就自动降级并打醒目 WARN（应用仍能打开，但会明确告知保护已关闭）。查看当前模式：
+  ⚠️ **网关镜像必须自带 `njs >= 1.0.1`**：`js_access` 自 njs 0.9.9 才有，
+  而 0.9.9~1.0.0 有访问控制绕过漏洞 CVE-2026-18329，1.0.1 才修好。本项目用 `nginx:1.31`。
+  启动脚本 `fv-njs-boot.sh` 会先探测 `.so` 实际位置再试加载；不可用就自动降级并打醒目
+  WARN（应用仍能打开，但会明确告知保护已关闭，并说明是"缺模块"还是"版本太旧"）。查看当前模式：
   ```bash
   docker logs basemetas-fileview-gateway 2>&1 | grep -i fv-njs-boot
   ```
@@ -667,9 +669,12 @@ mode=enforce   →   mode=log      # 退回「只记录不拦截」
     `/epub/resource`、`/convert/api/srvFile`；
   - njs 由主配置 `app/docker/fv-main.main` 在 `main` 层 `load_module` 加载
     （⚠️ 写在 conf.d 片段里会报 `"load_module" directive is not allowed here`，
-    这个错与镜像带不带 njs **无关**）。镜像带不带不预设：启动脚本 `fv-njs-boot.sh`
-    会先探测 `.so` 实际位置再试加载，确实没有就降级并打 WARN
-    （应用仍能打开，但会明确告知"body 路径保护已关闭"）。看当前模式：
+    这个错与镜像带不带 njs **无关**）。
+  - ⚠️ **网关镜像必须自带 `njs >= 1.0.1`**：`js_access` 自 njs 0.9.9 才有，
+    而 0.9.9~1.0.0 有访问控制绕过漏洞 CVE-2026-18329，1.0.1 才修好。
+    本项目用 `nginx:1.31`（自带 1.0.1）。启动脚本 `fv-njs-boot.sh` 会先探测 `.so`
+    实际位置再试加载；不可用就降级并打 WARN（应用仍能打开，但会明确告知
+    "body 路径保护已关闭"，并说明是"缺模块"还是"版本太旧"）。看当前模式：
     ```bash
     docker logs basemetas-fileview-gateway 2>&1 | grep -i fv-njs-boot
     ```

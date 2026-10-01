@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.26
+version=0.5.27
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.26：堵上「POST body 路径绕过」高危缺口（逐用户权限闸门此前看不到请求体里的路径，任意已登录用户可用 POST 让引擎读出别人私有文件；真机已验证可利用）。现在由 njs 在鉴权阶段读取 body、把路径交给同一个闸门判定，不可读直接 403。（0.5.26 修订：首版启动脚本把 conf.d 配置片段当主配置传给 nginx -c，报 "map directive is not allowed here" 并无限重启；第二版又把 load_module 写在 conf.d 片段里，报 "load_module directive is not allowed here"（该指令只能在主配置 main 层）而被误判成"镜像不含 njs"。现改为自带主配置 fv-main.main 在 main 层加载 njs，启动脚本先探测 .so 实际路径再试加载、只在确有模块缺失时才降级。）0.5.25：安全收紧 —— 逐用户权限闸门不再因 URI 后缀是 .css/.png 等就直接放行（原先「/preview/api/file.css?filePath=/vol1/私密.docx」可绕过判定）；引擎镜像锁到 digest 防上游改内容；data/logs/fonts 目录权限由 0777 收到 0700（引擎实测以 root 运行，不受影响）；删掉未使用的 api-scope 声明。0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。0.5.21：修复卸载容错脚本的 CRLF 行尾。0.5.20：放开单文件预览大小上限，默认 1 GB。
+changelog=0.5.27：修复 0.5.26 在真机上暴露的两个问题 —— ① 网关镜像的 njs 版本不够：body 路径保护依赖的 js_access 指令自 njs 0.9.9 才有，且 0.9.9~1.0.0 存在访问控制绕过漏洞 CVE-2026-18329（njs 1.0.1 才修好），而原先用的 nginx:1.27 自带 njs 0.8.x 根本不认识该指令；现升到 nginx:1.31（自带 njs 1.0.1）。② 启动脚本的降级判据只看最后一次尝试的日志，而该日志每轮都被覆盖、最后几条又是兜底假路径必然 dlopen 失败，于是"镜像有 njs 但版本太旧"被误报成"镜像不含 njs"；现改为累积全部尝试的证据（SAW_LOADED）并给出准确诊断。0.5.26：堵上「POST body 路径绕过」高危缺口（逐用户权限闸门此前看不到请求体里的路径，任意已登录用户可用 POST 让引擎读出别人私有文件；真机已验证可利用）。现在由 njs 在鉴权阶段读取 body、把路径交给同一个闸门判定，不可读直接 403。（0.5.26 前两轮修订：首版把 conf.d 配置片段当主配置传给 nginx -c，报 "map directive is not allowed here" 并无限重启；第二版又把 load_module 写在 conf.d 片段里，报 "load_module directive is not allowed here"（该指令只能在主配置 main 层），现改为自带主配置 fv-main.main 在 main 层加载 njs。）0.5.25：安全收紧 —— 逐用户权限闸门不再因 URI 后缀是 .css/.png 等就直接放行（原先「/preview/api/file.css?filePath=/vol1/私密.docx」可绕过判定）；引擎镜像锁到 digest 防上游改内容；data/logs/fonts 目录权限由 0777 收到 0700（引擎实测以 root 运行，不受影响）；删掉未使用的 api-scope 声明。0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。0.5.21：修复卸载容错脚本的 CRLF 行尾。0.5.20：放开单文件预览大小上限，默认 1 GB。
 
 ctl_stop=true
 checkport=false

@@ -138,9 +138,18 @@ proxy_pass http://fileview:80/ ← 只有上面两道都放行才转发
   （http 上下文合法）。
   ⚠️ 放在片段里会报 `"load_module" directive is not allowed here` —— 这个错**与镜像
   带不带 njs 无关**，曾导致误判成"镜像不含 njs"而白白降级（见 CHANGELOG「第二轮」）。
-- **镜像带不带 njs 不预设**：启动脚本 `fv-njs-boot.sh` 先 `find` 定位 `.so` 实际路径、
-  再逐一试加载；确实没有就自动降级（剥掉 njs 指令）并打醒目 WARN，保证应用一定能打开。
-  `load_module` 失败会让 nginx 以 `[emerg]` 退出、整个应用打不开，故必须有此兜底。
+- **⚠️ 网关镜像必须自带 `njs >= 1.0.1`**（不是"带 njs 就行"）：
+  - `js_access` 自 **njs 0.9.9**（2026-05-19）才引入，更早的版本**不认识这个指令**；
+  - 而 **0.9.9 ~ 1.0.0 存在访问控制绕过漏洞 [CVE-2026-18329](https://www.cve.org/CVERecord?id=CVE-2026-18329)**
+    —— 异步读 body 的延续抛出异常时，nginx 会当作检查通过继续处理；**njs 1.0.1**（2026-09-02）才修好；
+  - 本项目用官方 mainline `nginx:1.31`（其 Dockerfile `NJS_VERSION=1.0.1`）。
+    原先的 `nginx:1.27`（2024）自带 njs 0.8.x，**没有 `js_access`** → 真机 2026-10-01 实测降级。
+- **镜像可用性不预设，但会明确报告**：启动脚本 `fv-njs-boot.sh` 先 `find` 定位 `.so`
+  实际路径、再逐一试加载。区分三种情况并给准确原因：
+  ① 模块文件缺失；② 模块在但 njs 太旧（不认识 `js_access`）；③ 模块在但配置写错。
+  **判据基于全部尝试的累积证据**（`SAW_LOADED`），不是只看最后一次 ——
+  否则会被兜底假路径的 `dlopen` 失败带偏、误报成"镜像不含 njs"（真机踩过）。
+  无论哪种情况都会降级（剥掉 njs 指令）保证应用能打开，并打醒目 WARN 说明保护已关闭。
 - 只对「路径在 body 里」的接口生效（`/localFile`、`/netFile`、`/status/poll`、
   `/password/unlock`、`/epub/resource`、`/convert/api/srvFile`），其余请求原样放过；
 - 新入口 `GET /check-body` **复用闸门的 `can_read` + `current_mode`**（判定单一事实来源），

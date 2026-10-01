@@ -65,8 +65,20 @@ services:
     #    实在没有就自动降级（剥掉 njs 指令）并打醒目 WARN，绝不让应用打不开。
     #    当前处于哪个模式，看：docker logs <gw> 2>&1 | grep -i fv-njs-boot
     #
-    # 用 debian 版（默认标签）而不是 alpine：官方文档给出 njs 用法示例用的就是默认镜像。
-    image: nginx:1.27
+    # ★★ 镜像版本要求：njs >= 1.0.1（不是"带 njs 就行"）★★
+    #    本项目的 body 路径保护依赖 `js_access` 指令，而它：
+    #      · **njs 0.9.9（2026-05-19）才引入** —— 之前的版本根本不认识这个指令；
+    #      · 0.9.9 ~ 1.0.0 存在**访问控制绕过漏洞 CVE-2026-18329**（异步读 body 抛异常时
+    #        nginx 会当作检查通过继续处理），**njs 1.0.1（2026-09-02）才修好**。
+    #    官方 mainline 镜像自带 njs 1.0.1（其 Dockerfile 里 NJS_VERSION=1.0.1），满足要求。
+    #
+    #    ⚠️ 不要退回 nginx:1.27 之类旧标签：它自带 njs 0.8.x，**没有 js_access**，
+    #       启动脚本会降级 —— 应用能开，但 body 路径保护被关掉（真机 2026-10-01 实测）。
+    #    ⚠️ 也不要为了"新"而乱换 alpine 变体：本项目按 debian 版的路径布局验证过。
+    #
+    #    换镜像后怎么确认生效：docker logs <gw> 2>&1 | grep -i fv-njs-boot
+    #      出现「POST body 路径保护：**已开启**」= 好；仍出现 js_access 报错 = 还不够新。
+    image: nginx:1.31
     container_name: basemetas-fileview-gateway
     restart: unless-stopped
     # ⚠️ 必须先删掉残留的 app.sock 再启动。

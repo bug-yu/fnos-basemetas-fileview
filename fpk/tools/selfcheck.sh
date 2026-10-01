@@ -313,6 +313,26 @@ else
   echo "   ⚠️  本机没有 python，跳过闸门判定矩阵单测"
 fi
 
+echo
+echo "-- 网关镜像必须带 njs >= 1.0.1（否则 js_access 不可用，保护会降级）--"
+# 背景：js_access 自 njs 0.9.9（2026-05）才有；0.9.9~1.0.0 有访问控制绕过漏洞
+#       CVE-2026-18329，njs 1.0.1（2026-09）才修好。官方 mainline 镜像自带 1.0.1。
+#       旧标签（nginx:1.27 等）自带 njs 0.8.x，没有该指令 → 真机 2026-10-01 实测降级。
+GWIMG="$(grep -oE '^ *image: nginx:[^ ]+' "$BASE/app/docker/docker-compose.yaml" | head -n1 | sed 's/^ *image: //')"
+if [ -z "$GWIMG" ]; then
+  echo "   ❌ 没找到网关镜像（compose 里应有 image: nginx:...）"; FAILED=1
+elif printf '%s\n' "$GWIMG" | grep -qE '^nginx:1\.(2[0-9]|30)(\.[0-9]+)?$'; then
+  echo "   ❌ 网关镜像 $GWIMG 太旧：自带 njs 没有 js_access，body 路径保护会降级"; FAILED=1
+else
+  echo "   ✅ 网关镜像 $GWIMG（要求自带 njs >= 1.0.1）"
+fi
+# 需求必须写在 compose 注释里，避免以后被随手改回旧镜像
+if grep -q 'njs >= 1.0.1' "$BASE/app/docker/docker-compose.yaml"; then
+  echo "   ✅ compose 里写明了「njs >= 1.0.1」的要求"
+else
+  echo "   ❌ compose 里没写明 njs 版本要求（后人容易改回旧镜像）"; FAILED=1
+fi
+
 fv_sync_volumes "/vol1,/vol3" >/dev/null
 echo "-- 保存设置 /vol1,/vol3 之后 --"
 sed -n '/## VOLUMES_BEGIN/,/## VOLUMES_END/p' "$TRIM_APPDEST/docker/docker-compose.yaml" | sed 's/^/   /'
