@@ -21,9 +21,6 @@
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
 | `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
-| `tools/fv-docker-doctor.sh` | NAS 上一键**诊断 Docker 侧**问题（安装报 `layer does not exist` / 拉不动镜像时用，只读） |
-| `tools/fv-docker-layerdb.sh` | 检查 / 清理 Docker 镜像元数据（layerdb）里的残留条目（`layer does not exist` 的第二步处理；`--fix` 前会自动备份） |
-| `tools/fv-docker-imageaudit.sh` | 审计 Docker 镜像记录健康度：坏记录有几条、对应哪些镜像名、**哪些容器引用了它们**（= 重启会起不来的应用），只读 |
 | `CHANGELOG.md` | 版本更新说明 |
 
 > `.fpk` 里装的是「怎么跑」而不是「跑什么」：预览引擎镜像 `basemetas/fileview:1.5.2`（约 863 MB）在**安装时**从 Docker Hub 拉取，不在包内。这也是飞牛官方 Docker 应用的标准形态。
@@ -165,7 +162,7 @@ FileView 需以**同名同路径**只读挂载存储卷（`/vol1:/vol1:ro`），
 向导里填的值会持久化到 `${TRIM_PKGVAR}/volumes.conf`，升级/重启时按「本次向导值 → 上次保存的设置 → `auto`」的顺序取值；同步结果记在 `${TRIM_PKGVAR}/fv-volumes.log`。
 
 > 💡 **为什么探测要取并集（0.5.8 修的那个 bug）**：存储卷不一定都是独立挂载点。
-> 实测有这种机器：`/vol1`、`/vol2` 在 `/proc/mounts` 里是独立挂载点，`/vol3` 却只是个目录。
+> 有些机器上：`/vol1`、`/vol2` 在 `/proc/mounts` 里是独立挂载点，`/vol3` 却只是个目录。
 > 旧写法「只要探到任意一个挂载点就不再看目录」会静默漏掉 `/vol3` ——
 > 而 `/vol1`、`/vol2` 一切正常，看起来完全不像配置问题。
 > 现在改成「挂载点 ∪ `/volN` 目录」取并集，两种情况都覆盖。
@@ -212,231 +209,8 @@ VOLS="/vol1,/vol2,/vol3" bash tools/fv-repair.sh
 
 ```bash
 bash tools/fv-doctor.sh
-bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带实测某个具体文件能不能读
+bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带检查某个具体文件能不能读
 ```
-
-
-### 安装报 `layer does not exist`
-
-安装时弹出（两种写法都会遇到）：
-
-```
-gateway Pulling / acl Pulling / fileview Pulling / acl Pulled
-Error response from daemon: layer does not exist
-```
-```
-unable to get image 'nginx:alpine': Error response from daemon: layer does not exist
-```
-
-这是 **Docker daemon 的镜像状态不一致，与本应用无关**：报错发生在 `docker pull` 阶段，比安装包里的任何脚本都早；本应用只做容器级操作（`docker rm -f`、`compose down`），**从不 `rmi` / `prune`**，卸载也不会删镜像。
-
-同时会出现几个反直觉的现象，别被带偏：`docker images` 里列不出那个镜像、`docker rmi -f X` 回一句 `No such image`、`docker pull X` 打印了 `Downloaded newer image` 拉完却依然不在。
-
-#### 第一步：看 dockerd 日志定性
-
-```bash
-journalctl -u docker --no-pager -n 200 | grep -E 'not restoring image|layer does not exist'
-```
-
-看到这种，就是本文要处理的情况：
-
-```
-level=error msg="not restoring image" chainID="sha256:xxxx…" err="layer does not exist"
-level=error msg="Handler for GET /v1.51/images/nginx:alpine/json returned error: layer does not exist"
-```
-
-含义：**daemon 认为那个镜像在，但它的层取不出来**。有两种成因，处理方式完全不同：
-
-| 成因 | 怎么判断 | 怎么修 |
-|---|---|---|
-| ① daemon 自己的索引状态不一致（**断电 / 异常重启后最常见**） | 跑第二步的扫描，**残留 0 条** | 干净地停一次再起（第二步） |
-| ② layerdb 里真有残留条目 | 扫描报出残留条数 > 0 | 用脚本 `--fix` 清掉（第三步） |
-
-#### 第二步：先试「干净地停一次再起」
-
-> ⚠️ 是 `stop` + `start`，**不是 `restart`**。
-> 实测（2026-09-28，断电后）：`systemctl restart docker` 试了两次都没修好，日志里还留着一堆
-> ```
-> docker.service: Unit process 72220 (docker-proxy) remains running after unit stopped.
-> docker.service: Found left-over process … This usually indicates unclean termination of a previous run
-> ```
-> 一次干净的 `stop`（等它真的停完）→ `start` 之后，`docker pull nginx:alpine` 会回
-> **`Image is up to date`** —— 但注意：**这只说明层数据在，不代表镜像记录是好的**
-> （实测那次 pull 回 `up to date`，`docker image inspect nginx:alpine` 依然失败）。
-
-```bash
-systemctl stop docker
-pgrep -a docker-proxy          # 应该没有输出；有就再等一会儿
-systemctl start docker
-docker image inspect nginx:alpine >/dev/null 2>&1 && echo "✅ 好了" || echo "❌ 记录还是坏的"
-```
-
-`❌` 就往下走 —— 那次实测的最终解是**给这两个名字换上一个能用的镜像**（见下面「根治」一节），
-而不是继续折腾 daemon。
-
-#### 第三步：查 layerdb 残留
-
-```bash
-bash tools/fv-docker-layerdb.sh          # 只读：报告残留条数（docker 跑着也能用）
-systemctl stop docker
-bash tools/fv-docker-layerdb.sh --fix    # 自动备份 layerdb 后，只删确认残留的条目
-systemctl start docker
-docker pull nginx:alpine
-```
-
-脚本只删这两类条目 —— 那部分数据已经丢了，元数据是垃圾，删掉不会影响任何还能用的镜像：
-
-- `cache-id` 指向的层数据目录（`overlay2/<cache-id>`）不存在
-- `parent` 指向的父层条目不存在（父层丢了同样会让整条链取不出来）
-
-`--fix` 前会把 layerdb 打包备份到 `${DockerRootDir}/image/`。
-
-#### 顺便确认不是别的原因
-
-```bash
-docker info --format '{{.DockerRootDir}}'      # 数据根（fnOS 上通常是 /vol1/docker）
-df -h <数据根>; df -i <数据根>                  # 磁盘 / inode 有没有满
-dmesg | grep -iE 'I/O error|btrfs|ext4|xfs|corrupt' | tail -30    # 文件系统有没有被写坏
-docker ps -a --format '{{.Names}}\t{{.Status}}'                   # 其它应用有没有被牵连
-```
-
-前三项都正常、其它容器也都在跑，就放心按上面两步处理；**有文件系统报错就先处理存储**，别再折腾 Docker。
-
-#### 三个镜像各自的作用
-
-| 镜像 | 作用 |
-|---|---|
-| `nginx:alpine` | 网关 |
-| `python:3-alpine` | 逐用户权限闸门 |
-| `basemetas/fileview:1.5.2` | 预览引擎 |
-
-报错点名哪个就处理哪个。**不要**拿机器上已有的 `nginx:latest` 来替换 `alpine` —— 两者基底不同（Debian 162MB vs musl ~40MB），而且会让本应用多一层对别人镜像的依赖。
-
-> 三个镜像都能 `docker pull` 成功之后，回应用中心重装即可。
-
-#### 根治：先审计影响面，再决定动到哪一层
-
-`layer does not exist` 处理完之后，**别的应用可能还有同样的坏记录** —— 它们现在跑着，是因为已经挂载好了，**重启时才会暴露**。所以先只读审计一遍：
-
-```bash
-bash tools/fv-docker-imageaudit.sh
-```
-
-它会直接列出：坏掉的镜像记录有几条、分别对应哪些镜像名、**哪些容器引用了它们**（也就是重启后会起不来的应用）。
-
-按结果分三种处理：
-
-| 情况 | 处理 |
-|---|---|
-| 坏记录**没有名字**、也没有容器引用 | **不影响任何应用**，可以先不管；想清干净见下面「清理孤儿坏记录」 |
-| 坏记录**被某个容器引用** | 那个容器重建时会失败 —— 先给它换个能用的镜像（`docker tag` 顶上，或改它的 image），再重建 |
-| 想一次性消除所有隐患 | 先按上面「清理孤儿坏记录」来；只有连它都清不掉时才重建镜像存储（见最后一节） |
-
-**「换名字」的具体做法**（2026-09-28 实测就是用这个解封的）—— 拿一个能跑的同类镜像顶掉坏名字：
-
-```bash
-# 找一个能用的同类镜像（inspect 成功的）
-docker images | grep -iE 'nginx|python'
-
-docker tag <能用的镜像> <坏掉的名字>          # 例：docker tag nginx:latest nginx:alpine
-# 若 tag 报 layer does not exist，先把坏名字摘掉再 tag：
-#   docker rmi -f nginx:alpine && docker tag nginx:latest nginx:alpine
-
-# 验证名字现在能用了
-docker image inspect <坏掉的名字> >/dev/null 2>&1 && echo "✅" || echo "❌"
-```
-
-compose 发现镜像在本地就不会去 pull，也就不会撞上那条坏记录。
-
-**验证修好了没有**：
-
-```bash
-systemctl stop docker && systemctl start docker
-journalctl -u docker --no-pager -n 100 | grep -E 'not restoring image|layer does not exist'
-# 应该没有输出
-
-# 再验一次「新拉一个 alpine 基底的镜像能不能用」—— 这是本问题的核心机制
-docker pull alpine:latest && docker run --rm alpine:latest echo ok
-docker rmi alpine:latest && docker pull alpine:latest     # 再来一遍，确认可重复
-```
-
-#### 清理「孤儿」坏记录（可选 —— 不影响任何应用）
-
-如果审计结果是**无名字、且没有容器引用**的坏记录（典型来源：断电时拉了一半的镜像，之后名字又被 `docker tag` 顶掉了），那它们**不影响任何应用**，只是：
-
-- 每次启动在日志里打两行 `not restoring image`
-- `docker image prune -f` 清不掉（会回 `Total reclaimed space: 0B` —— prune 需要先加载记录才能删，而加载就失败）
-- 隐患：**以后你再用到那个镜像名，还会撞上同一面墙**
-
-想清掉的话，按下面来（**第 1 步是安全检查，有输出就别删**）：
-
-```bash
-# 0. 从 daemon 日志里拿到两个东西：坏记录的 imageID、和它对应的链顶 chainID
-journalctl -u docker --no-pager -n 200 | grep -E 'not restoring image'
-#   → chainID=sha256:xxxx… 就是链顶
-bash tools/fv-docker-imageaudit.sh    # → 会列出坏记录的 imageID
-
-# 1. ⚠️ 安全检查：链顶有没有被别的层当作 parent 引用？
-grep -rl "<链顶chainID>" /vol1/docker/image/overlay2/layerdb/sha256/*/parent 2>/dev/null
-#   无输出 → 安全（它是某条链的顶端，删掉不影响别的镜像）
-#   有输出 → 它被别的镜像依赖，**不要删**，改用「换名字」的办法绕过
-
-# 2. 备份镜像元数据（只是元数据，很小）
-systemctl stop docker
-tar czf /vol1/docker-image-meta-$(date +%Y%m%d%H%M).tar.gz -C /vol1/docker image
-
-# 3. 删掉镜像记录 + 链顶条目（只删链顶，父层保留 —— 父层可能被别的镜像共用）
-#
-#    实测（2026-09-28）：**只删 layerdb 的链顶条目就已经让 not restoring image 消失了**，
-#    imagedb 那两条记录删不删都行。想彻底清干净就两条一起删；嫌麻烦只做 layerdb 那步也可以。
-#
-#    ⚠️ 粘贴多行命令时小心终端把行弄乱 —— 实测踩过：`for id in <长ID1> \<换行><长ID2>; do`
-#       被拼成一行后，循环体里的 rm 变成了循环列表的一部分，**一条都没删成**
-#       （好在那些拼接出来的路径都不存在，没有误删）。粘完先 `history` 或回显确认一下。
-
-for id in <坏记录的 imageID…>; do
-  rm -rf "/vol1/docker/image/overlay2/imagedb/content/sha256/$id"
-  rm -rf "/vol1/docker/image/overlay2/imagedb/metadata/sha256/$id"
-done
-for c in <链顶 chainID…>; do
-  rm -rf "/vol1/docker/image/overlay2/layerdb/sha256/$c"
-done
-
-# 4. 起 docker 验证
-#    ⚠️ 别用 `journalctl -n 60 | grep` —— dockerd 启动时会打很多行，
-#       错误在开头，被 -n 截掉就误判成「好了」。要用计数或时间过滤：
-systemctl start docker
-journalctl -u docker --no-pager | grep -c 'not restoring image'          # 看总次数有没有增加
-journalctl -u docker --no-pager | grep 'not restoring image' | tail -2   # 最近一次是什么时候
-
-# 5. 顺带验一下「全新的 alpine 基底镜像能不能正常拉+跑」（不碰你在用的镜像名）
-docker pull python:3.12-alpine && docker run --rm python:3.12-alpine python3 -V
-```
-
-> 删掉之后，对应的 `overlay2/<cache-id>` 层数据目录会变成无人引用的垃圾（占空间）。
-> **确认一切正常、且相关应用都没问题之后**再考虑清理它们；不确认就先留着，只是占点空间。
-
-#### 最后的办法：重建镜像存储
-
-坏记录清不掉、或者想一次性消除隐患时才用：
-
-```bash
-# ⚠️ 代价：所有应用都要重新拉镜像。动手前先留好清单
-docker images --format '{{.Repository}}:{{.Tag}}' | grep -v '<none>' | sort -u > /vol1/image-list.txt
-docker ps -a --format '{{.Names}}\t{{.Image}}' > /vol1/container-images.txt
-
-systemctl stop docker
-# 停 docker 后所有容器已停止，此时移动 overlay2 才是安全的
-mv /vol1/docker/image    /vol1/docker/image.broken.$(date +%s)
-mv /vol1/docker/overlay2 /vol1/docker/overlay2.broken.$(date +%s)
-systemctl start docker
-
-# 然后按 image-list.txt 逐个 docker pull，再逐个 docker start 容器
-```
-
-- **卷数据（`/vol1/docker/volumes`）和容器定义（`/vol1/docker/containers`）都不动**，各应用的数据不会丢。
-- 真正的风险是**镜像拉不回来**：有几个镜像来自 `ghcr.nju.edu.cn`、`registry.fnnas.com`、`registry.cn-hangzhou.aliyuncs.com` 这类源，若其中某个不可用，对应应用就起不来。**所以动手前先把 `image-list.txt` 存好，并确认这些源可达。**
-- 一切正常后，那两个 `.broken.*` 目录可以删掉腾空间。
 
 ### 卸载失败（`Request failed`）
 
@@ -485,7 +259,7 @@ bash fv-uninstall-fix.sh
 > docker exec basemetas-fileview-engine sh -c 'du -sh /opt/fileview/data /opt/fileview/logs'
 > tail -f /vol1/@appdata/basemetas-fileview/logs/preview/fileview-preview.log
 > ```
-> 目录权限是 `0700`，只给 root。引擎容器**实测以 `uid=0(root)` 运行**（`docker exec basemetas-fileview-engine id`），root 无视权限位，所以不影响引擎读写；收紧是为了挡住本地其它非 root 用户 —— `data`/`logs` 里会出现**转换产物**（含被预览文件的内容片段）与日志，不是纯公开数据。
+> 目录权限是 `0700`，只给 root。引擎容器**以 `uid=0(root)` 运行**（可用 `docker exec basemetas-fileview-engine id` 确认），root 无视权限位，所以不影响引擎读写；收紧是为了挡住本地其它非 root 用户 —— `data`/`logs` 里会出现**转换产物**（含被预览文件的内容片段）与日志，不是纯公开数据。
 
 ### PDF 工具栏 / Excel 缩放（两个「功能缺失」的真相）
 
@@ -550,7 +324,7 @@ showstatisticBarConfig: { count: false, view: false, zoom: true }
   **（0.5.25 起）静态资源判定更严**：只有「请求自己没带 `/vol` 路径」的静态资源请求才被直接放行，带 `?filePath=/vol…` 之类的后缀变体（如 `file.css?filePath=/vol1/x.docx`）一律落到正常权限判定，不再有后缀旁路。
 - ✅ 存储卷只读挂载，且仅限向导里填写的卷。
 - ✅ **引擎镜像锁到 digest（0.5.25 起）**：`basemetas/fileview:1.5.2@sha256:ebcb1dc6…`。标签是可移动的，上游重推同名标签时内容会变而版本号不变；锁 digest 后拉到的永远是同一份内容。
-- ✅ **数据目录权限 0700（0.5.25 起）**：`fonts` / `data` / `logs` 只给 root。引擎容器实测以 `uid=0(root)` 运行，不受影响；收紧是为了挡住本地其它非 root 用户（`data`/`logs` 里含转换产物与日志）。
+- ✅ **数据目录权限 0700（0.5.25 起）**：`fonts` / `data` / `logs` 只给 root。引擎容器以 `uid=0(root)` 运行，不受影响；收紧是为了挡住本地其它非 root 用户（`data`/`logs` 里含转换产物与日志）。
 - ✅ **网络文件预览已关闭（0.5.22 起）**。本应用的入口只做本地路径预览，用不到引擎的「给一个 URL 让它去下载」能力。留着那条路等于开了一个 SSRF：任何能登录飞牛的人都能构造
   `/app/basemetas-fileview/preview/view?url=http://<内网地址>/...` 让引擎去抓内网资源渲染给他看，
   而且这条路径**绕过逐用户权限闸门**（闸门从 `path` / `filePath` 或来源页 query 里取路径，`url=` 请求里没有 `/vol` 路径，走的是「放行」分支）。
@@ -596,7 +370,7 @@ showstatisticBarConfig: { count: false, view: false, zoom: true }
 **不需要任何设置**。装上就生效：只有对该文件有读权限的人才能预览，否则 403。
 
 - 团队文件、共享文件按你在飞牛里设的权限正常放行；
-- 判定读的是飞牛的 ACL，不是 POSIX 模式位（实测：模式位是 `0000` 但 ACL 允许读的文件，会正确判为可读）；
+- 判定读的是飞牛的 ACL，不是 POSIX 模式位（模式位是 `0000`、但 ACL 允许读的文件会正确判为可读）；
 - 静态资源（css/js/图片）不参与判定，避免噪音。
 
 **先确认身份头能到**（需要登录态，用浏览器打开）：
@@ -642,16 +416,12 @@ mode=enforce   →   mode=log      # 退回「只记录不拦截」
   路径，回溯不出原文件。0.5.16 起会**退回用来源页 URL 里的原始 `path` 判定**，正常流程（浏览器从预览页
   发起）能被正确拦下；只有**手工构造、不带来源页**的请求才无法判定（此时 fail-open 放行）。
   要彻底堵死需要闸门记录「哪个 uid 触发过哪个转换」，属后续可选项。
-- 用开放 API 的 `trim.file.checkUserACL` 是官方路线，但实测**走不通**
-  （应用脚本拿不到 `TRIM_API_TOKEN`，socket 是 `root:root 0660`），故未采用。
-
 
 ### 背景：为什么不用飞牛的开放 API
 
 官方给的路线是 `trim.file.checkUserACL`（后端 API，scope `trim.file.userAcl`），
-但实测**走不通**：应用脚本里拿不到 `TRIM_API_TOKEN`，
+但**走不通**：应用脚本里拿不到 `TRIM_API_TOKEN`，
 `/var/run/trim_open_gateway_apiscope.socket` 又是 `root:root 0660`。
-生态调研也印证了这一点 —— `grep checkUserACL` 在整个 `@appcenter` 里零使用。
 
 （若将来飞牛开放了 token 注入，可以改用官方接口；那时需要系统 ≥ 1.2.0401、App ≥ 1.34.0。
 现在的实现不依赖开放 API，所以 `manifest.os_min_version` 仍是 `1.2.0`。）
@@ -700,23 +470,11 @@ build.bat
 
 **就地升级**：改完配置或代码后，把 `manifest` 的 `version` 末位 +1、重新打包，然后在应用中心「手动安装」新版 `.fpk` 即可 —— **不需要先卸载**（飞牛靠版本号递增判断升级安装，走包里的 `cmd/upgrade_init` / `cmd/upgrade_callback`）。
 
-> ⚠️ 飞牛应用设置里的「自动更新应用」开关**对本应用无效**：它只对**应用中心上架**的应用做更新检查，手动安装的第三方包飞牛不知道去哪里查新版本。
->
-> 本仓库早期自带过一套「自建发布点 + 计划任务」的自动更新方案（`自动更新/`：`version.txt` + `.fpk` + `appcenter-cli install-fpk --env`）。0.5.19 起移除，原因：
->
-> 1. 它有两个行为**始终没在真机验证过**（`appcenter-cli list` 的输出格式、`install-fpk` 对已安装应用是走升级还是报错）；
-> 2. 它原本要解决的主要痛点「每次更新都得先卸载」**早已由版本号规则解决**（见上），剩下的收益只是省掉"下载 + 手动安装"两步。
->
-> 需要时可以随时从 git 历史取回：
->
-> ```bash
-> git show ebd4015:自动更新/auto-update.sh > auto-update.sh
-> git show ebd4015:自动更新/README.md      > 自动更新-手册.md
-> ```
+> ⚠️ 飞牛应用设置里的「自动更新应用」开关**对本应用无效**：它只对**应用中心上架**的应用做更新检查，手动安装的第三方包飞牛不知道去哪里查新版本。想用新版时，重新打包后到应用中心「手动安装」即可（见上）。
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.24`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.25`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -731,6 +489,7 @@ build.bat
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.25** | 安全收紧：权限闸门不再因 URI 后缀是 `.css` / `.png` 就放行（堵住 `file.css?filePath=/vol1/私密.docx` 这类旁路）；引擎镜像锁到 digest；`data` / `logs` / `fonts` 目录权限收到 `0700` |
 | **0.5.24** | Excel / CSV 恢复缩放控件（上游把 Luckysheet 统计栏整条藏了，缩放滑杆就在里面） |
 | **0.5.23** | 修带触摸的电脑上 PDF 没有工具栏（上游把触屏电脑误判成 iPad）；Excel 不能缩放是上游设计，未改动 |
 | **0.5.22** | 挂出引擎的工作目录与日志（此前落在容器可写层，升级就丢）；关掉网络文件预览（SSRF 入口，且绕过权限闸门） |
@@ -750,5 +509,5 @@ build.bat
 ## 已知限制
 
 - **Excel / CSV 首次打开需强制刷新一次**：上游 FileView 前端取文件时用了 `credentials: 'omit'`，在带鉴权的网关下会取不到文件。本包已在网关层用 `sub_filter` 改写回默认行为，但该 JS 带 hash 被浏览器缓存，需强刷（`Ctrl+F5`）一次后生效。
-- 大图纸（几十 MB 的 DWG）渲染性能官方无指标，建议实测。
+- 大图纸（几十 MB 的 DWG）渲染性能官方无指标，建议实际测试。
 - 扩展名列表受约 500 字符上限约束，无法全量注册。
