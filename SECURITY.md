@@ -6,7 +6,7 @@
 2. **审计核对**：第三方审计报告 9 项逐条核对（含 2 处修正）
 3. **已实施 / 待办**：0.5.25 做了什么、还剩什么
 
-> 版本基线：`0.5.26`（引擎 `basemetas/fileview:1.5.2@sha256:ebcb1dc6…`）。
+> 版本基线：`0.5.25`（引擎 `basemetas/fileview:1.5.2@sha256:ebcb1dc6…`）。
 
 ---
 
@@ -56,7 +56,7 @@
 
 真正需要注意的是：三容器之间**没有网络隔离**（engine ↔ gateway ↔ acl 可互访），因为它们本就靠同一网络协作。这不构成跨应用风险。
 
-### ⚠️ 5. 路径穿越 / 后缀绕过 —— 准确（且已确认可利用）—— 0.5.25 已修
+### ✅ 5. 路径穿越 / 后缀绕过 —— 准确（且已确认可利用）—— 0.5.25 已修
 
 `SKIP_EXT` 只看 URI 后缀就放行是一处**真实旁路**。审计指出后，我实测验证：
 
@@ -69,112 +69,11 @@ GET /preview/api/file?filePath=/vol1/…/sample.docx       → 200
 
 **0.5.25 已修**：扩展名短路只在「请求自己没带 `/vol` 路径」时生效。带 `?filePath=/vol…` 或 `X-Acl-Path: /vol…` 的一律落到正常判定。12 条判定矩阵单测（`fpk/tools/test_acl_decide.py`）已并入自检。
 
-### 🔴 6. POST body 里的路径判定不到 —— 准确，**已升级为高危**，**0.5.26 已修**
+### ✅ 6. POST body 里的路径判定不到 —— 准确，但影响有限
 
-> ⚠️ **本条在 0.5.25 里被误判为「低优先级」，现已更正。** 详见
-> [`fpk/tools/POST-BYPASS-REVIEW.md`](fpk/tools/POST-BYPASS-REVIEW.md)、
-> [`fpk/tools/POST-BYPASS-VERDICT.md`](fpk/tools/POST-BYPASS-VERDICT.md)。
+nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径」的接口无法由闸门判定路径。当前缓解是**退回来源页 URL 里的 `path`**（`X-Acl-Ref`）。
 
-nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径」的接口无法由闸门判定路径。
-
-**2026-09-29 源码级复核结论（`fileview-backend` 开源，直接读源码）：**
-
-- `POST /preview/api/localFile`、`/netFile` 存在，参数 `@Valid @RequestBody FilePreviewRequest`，路径字段是 **`srcRelativePath`**；
-- 该字段的 `@SecurePath` 校验器**只挡 `..` 穿越，不禁止绝对路径** → `/vol2/<别人uid>/私密.docx` 直接通过；
-- 到 `new File(actualFilePath)` 之间**没有根目录限制**（`FileUtils.processFilePath` 原样返回）；
-- **这前端主链路就是它**：`fileview-frontend/src/api/index.ts` 正常预览就是 `post('/localFile', {srcRelativePath})`。
-
-**攻击链（威胁模型内）**：已登录用户 A，构造 `POST /preview/api/localFile`，body 带 B 的私有 `/vol` 路径、
-**不带 Referer** → 闸门落到「未解析到路径（放行）」→ 引擎读该文件返回预览。
-
-#### 攻击面清单（2026-09-30 三接口源码复核，见 [`POST-BYPASS-VERDICT.md`](fpk/tools/POST-BYPASS-VERDICT.md)）
-
-| 接口 | 路径字段 | 性质 | 校验缺口 |
-|---|---|---|---|
-| `POST /preview/api/localFile` | `srcRelativePath` | **读** | `@SecurePath` 不挡绝对路径；无根目录收敛 |
-| `POST /convert/api/srvFile` | `filePath` / `targetPath` | **读 + 写** | `validateFileNameAndPath()` 只校验后缀与转换组合，**完全不校验根目录** |
-| `POST /preview/api/password/unlock` | `originalFilePath` | **探测** | 无校验；`7zz t` 退出码可区分「密码错/文件不存在」；旧式加密格式无法判定时 `return true` 放行 |
-
-> 其中 `srvFile` 是**以 root 写任意可写路径**（含 `@appdata` 配置目录），比只读的 `localFile` 更重；
-> `password/unlock` 是**他人文件存在性探测**的辅助信道。
-
-#### 真机验证结果（2026-09-30，**已验证可利用**）
-
-用改进后的 `probe_post_bypass_console.js`（v2）在真机普通用户会话跑出：
-
-| 用例 | 结果 | 含义 |
-|---|---|---|
-| `[0-a]` PRIVATE 自检 | **403** | 前提成立：该文件确实读不到 |
-| `[0-b]` PUBLIC 自检 | **200** | 对照有效：自己的文件能读 |
-| `[1]` GET 对照 | **403** | 闸门在正常工作 |
-| `[2]` POST 无 Referer | **200** | 🔴 **绕过成立**（核心证据） |
-| `[3]` POST 合法 Referer | **200** | 🔴🔴 **「合法 Referer 掩护非法 body」也成立** |
-| `[4]` POST `/convert/api/srvFile` | 404 | 网关未转发 `/convert/` 前缀 → 该面**未暴露**（是配置遮蔽，非引擎修复） |
-
-**`[3]=200` 是决定性结论**：攻击者只要先打开一个自己有权读的文件拿到合法 Referer，
-再在 POST body 里放别人的私有路径 —— 闸门会拿 **Referer 里那个合法路径**判定并放行，
-**body 里的非法路径根本没被看过**。
-→ **这意味着 fail-closed（方案 A）不成立**（攻击者不需要不带 Referer），**必须走方案 B**。
-
-> 判读矩阵（上一轮曾读反）：`403`=闸门拦；`404/400/500`=**闸门已放行**（引擎层报错）；`200`=绕过成立。
-
----
-
-#### 0.5.26 的修法（方案 B：让鉴权层看见 body）
-
-新增 `app/docker/body-path-guard.js`（njs），在主 location 上加 `js_access`：
-
-```
-js_access bodyguard.guard      ← 先读 body、取路径、问闸门；不可读直接 403
-auth_request /__acl            ← 原链路保留，负责 GET 的 query 路径与 Referer 退回
-proxy_pass http://fileview:80/ ← 只有上面两道都放行才转发
-```
-
-要点：
-
-- **njs 由 `load_module` 加载，而该指令只能在主配置的 `main` 层** —— 所以本项目
-  自带主配置 `app/docker/fv-main.main`（`load_module` + `events{}` +
-  `http{ include conf.d/*.conf; }`），业务片段 `nginx.conf` 里只放 `js_path`/`js_import`
-  （http 上下文合法）。
-  ⚠️ 放在片段里会报 `"load_module" directive is not allowed here` —— 这个错**与镜像
-  带不带 njs 无关**，曾导致误判成"镜像不含 njs"而白白降级（见 CHANGELOG「第二轮」）。
-- **⚠️ 网关镜像必须自带 `njs >= 1.0.1`**（不是"带 njs 就行"）：
-  - `js_access` 自 **njs 0.9.9**（2026-05-19）才引入，更早的版本**不认识这个指令**；
-  - 而 **0.9.9 ~ 1.0.0 存在访问控制绕过漏洞 [CVE-2026-18329](https://www.cve.org/CVERecord?id=CVE-2026-18329)**
-    —— 异步读 body 的延续抛出异常时，nginx 会当作检查通过继续处理；**njs 1.0.1**（2026-09-02）才修好；
-  - 本项目用官方 mainline `nginx:1.31`（其 Dockerfile `NJS_VERSION=1.0.1`）。
-    原先的 `nginx:1.27`（2024）自带 njs 0.8.x，**没有 `js_access`** → 真机 2026-10-01 实测降级。
-- **镜像可用性不预设，但会明确报告**：启动脚本 `fv-njs-boot.sh` 先 `find` 定位 `.so`
-  实际路径、再逐一试加载。区分三种情况并给准确原因：
-  ① 模块文件缺失；② 模块在但 njs 太旧（不认识 `js_access`）；③ 模块在但配置写错。
-  **判据基于全部尝试的累积证据**（`SAW_LOADED`），不是只看最后一次 ——
-  否则会被兜底假路径的 `dlopen` 失败带偏、误报成"镜像不含 njs"（真机踩过）。
-  无论哪种情况都会降级（剥掉 njs 指令）保证应用能打开，并打醒目 WARN 说明保护已关闭。
-- 只对「路径在 body 里」的接口生效（`/localFile`、`/netFile`、`/status/poll`、
-  `/password/unlock`、`/epub/resource`、`/convert/api/srvFile`），其余请求原样放过；
-- 新入口 `GET /check-body` **复用闸门的 `can_read` + `current_mode`**（判定单一事实来源），
-  但**不退回 Referer** —— 这正是堵住「合法 Referer 掩护」的关键；
-- 闸门不可用 / body 非 JSON / 子请求异常 → **fail-open**，与 `auth_request` 的
-  `upstream backup` 方向一致（宁可没保护，不把应用弄坏）；
-- 主 location 与 SPA location **都挂了** `js_access`（少挂一处即可被绕过，自检有断言）。
-- 降级只在错误确实是**「模块文件缺失」**（`dlopen` / `not binary compatible`）时发生；
-  若是 `directive is not allowed here` 这类**配置写错**，则**不降级**、让错误原样暴露
-  —— 否则降级会变成掩盖 bug 的帮凶（前两轮事故的共同教训）。
-
-**自检**：`fpk/tools/selfcheck.sh` 的相关断言（守卫脚本存在 / `load_module` 在 main 层 /
-片段里没有 `load_module` / `js_access` 至少 2 处 / 闸门 `/check-body` 入口 /
-`location = /__acl-body` / 判定复用 `can_read` / 降级判据只认文件缺失 /
-include 可重写到副本）；`test_njs_boot.py` 验证主配置与片段的上下文归属；
-`test_acl_decide.py` 从 12 条扩到 **20 条**（新增 8 条 body 路径判定，
-含「合法 Referer 掩护场景仍拦截」）。
-
-**残留风险（已知、未修）**：
-
-- `[4]` 暴露的 `POST /convert/api/srvFile` 是**「读+写」**（`targetPath` 可控且无根目录收敛），
-  当前被网关的 location 配置挡在门外（返回 nginx 的 404 而非引擎响应）。若以后为别的功能
-  加了 `/convert/` 转发，这个可写面会立刻暴露 —— 已在 njs 名单里预先纳入，届时自动受保护。
-- `POST /preview/api/status/poll` 只带 `fileId`，njs 取不到 `/vol` 路径 → 不额外判定，
-  仍走原 `auth_request` 链路（该接口本身不读文件，风险低）。
+残余风险：若某 POST 接口的 body 路径与来源页不一致，判定可能用错路径。**待办**：逐一枚举 POST 接口，确认每个都满足「来源页 path 能代表目标文件」。当前判定为**低优先级**（本地预览主链路是 GET）。
 
 ### ✅ 7. 静态资源不判定 —— 准确（设计如此）
 
@@ -194,14 +93,6 @@ include 可重写到副本）；`test_njs_boot.py` 验证主配置与片段的�
 
 ## 3. 已实施 / 待办
 
-### 0.5.26 已实施（1 项，安全）
-
-| # | 项 | 位置 |
-|---|---|---|
-| E | **POST body 路径判定**（审计 #6，高危）：njs 在鉴权阶段读 body、把路径交给闸门 | `app/docker/body-path-guard.js`（新增）+ `nginx.conf` + `fv-acl-gate.py`（新增 `/check-body`） |
-
-自检新增 7 条断言；判定矩阵单测从 12 条扩到 20 条。
-
 ### 0.5.25 已实施（4 项，均不改变正常行为）
 
 | # | 项 | 位置 |
@@ -219,9 +110,7 @@ include 可重写到副本）；`test_njs_boot.py` 验证主配置与片段的�
 
 ### 待办（未做，按优先级）
 
-1. 🟡 **`convert/api/srvFile` 的可写面**（**读+写**）：当前被网关 location 配置挡在门外
-   （返回 nginx 404），但那是**配置遮蔽而非引擎修复**。njs 名单里已预先纳入，
-   一旦为别的功能加了 `/convert/` 转发就会自动受闸门保护；引擎侧仍建议上游做根目录收敛。
+1. **POST body 路径判定**（审计 #6）：逐一枚举 POST 接口，确认来源页 `path` 能否代表目标文件。当前低优先级。
 2. **`acl` 容器挂载收敛**：当前挂宿主 `/etc/passwd`、`/etc/group`（只读）。可评估是否可以缩到只挂必要字段 / 用 nss-wrapper，减少信息暴露。收益有限，暂缓。
 3. **引擎镜像升级流程**：锁 digest 后升级要**同时改标签和 digest**。查 digest：
    ```bash

@@ -54,31 +54,7 @@ services:
 
   # 统一网关适配层：监听 Unix Socket，转发给 FileView
   gateway:
-    # ⚠️ 0.5.26 起用 njs 读取 POST body 里的路径，堵住「body 路径绕过」高危缺口。
-    #    njs 是**动态模块**，必须由 `load_module` 加载，而该指令**只能出现在主配置
-    #    顶层（main 上下文）** —— 不能写在被 http{} include 的片段里。
-    #    所以本项目自带一份主配置 app/docker/fv-main.main（名字故意不用 .conf，
-    #    以免被镜像主配置的 `include conf.d/*.conf` 误收），由启动脚本 `-c` 指定它。
-    #
-    #    但"镜像带不带 njs"无法预先确定 → `load_module` 失败会让 nginx 起不来、
-    #    整个应用打不开。所以启动走 fv-njs-boot.sh：逐个候选路径试加载，
-    #    实在没有就自动降级（剥掉 njs 指令）并打醒目 WARN，绝不让应用打不开。
-    #    当前处于哪个模式，看：docker logs <gw> 2>&1 | grep -i fv-njs-boot
-    #
-    # ★★ 镜像版本要求：njs >= 1.0.1（不是"带 njs 就行"）★★
-    #    本项目的 body 路径保护依赖 `js_access` 指令，而它：
-    #      · **njs 0.9.9（2026-05-19）才引入** —— 之前的版本根本不认识这个指令；
-    #      · 0.9.9 ~ 1.0.0 存在**访问控制绕过漏洞 CVE-2026-18329**（异步读 body 抛异常时
-    #        nginx 会当作检查通过继续处理），**njs 1.0.1（2026-09-02）才修好**。
-    #    官方 mainline 镜像自带 njs 1.0.1（其 Dockerfile 里 NJS_VERSION=1.0.1），满足要求。
-    #
-    #    ⚠️ 不要退回 nginx:1.27 之类旧标签：它自带 njs 0.8.x，**没有 js_access**，
-    #       启动脚本会降级 —— 应用能开，但 body 路径保护被关掉（真机 2026-10-01 实测）。
-    #    ⚠️ 也不要为了"新"而乱换 alpine 变体：本项目按 debian 版的路径布局验证过。
-    #
-    #    换镜像后怎么确认生效：docker logs <gw> 2>&1 | grep -i fv-njs-boot
-    #      出现「POST body 路径保护：**已开启**」= 好；仍出现 js_access 报错 = 还不够新。
-    image: nginx:1.31
+    image: nginx:alpine
     container_name: basemetas-fileview-gateway
     restart: unless-stopped
     # ⚠️ 必须先删掉残留的 app.sock 再启动。
@@ -86,16 +62,7 @@ services:
     # 启动时不会自己清理已存在的 unix socket，一旦残留就 bind() failed (98: Address
     # already in use) 并退出，配合 restart: unless-stopped 变成无限重启。
     # umask 000 让新建的 socket 可被飞牛网关进程连接。
-    #
-    # ⚠️ 为什么探测/启动**不能**写成 `nginx -c /etc/nginx/conf.d/nginx.conf`：
-    #    那个文件是 **conf.d 片段**（内容是 http 块上下文），不是主配置。
-    #    当主配置用时 `map` 会落在 http 之外，nginx 直接报
-    #      [emerg] "map" directive is not allowed here in .../nginx.conf:NN
-    #    —— 这个错与 njs 无关，会让探测**永远失败**、必然崩、无限重启。
-    #    正确做法是 `-c /etc/nginx/conf.d/fv-main.main`（我们的主配置）。
-    #    正常路径就该用镜像默认主配置（它自带 include /etc/nginx/conf.d/*.conf），
-    #    天然把我们的片段放进 http 上下文。
-    command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec sh /etc/nginx/conf.d/fv-njs-boot.sh"]
+    command: ["sh", "-c", "mkdir -p /app/target && rm -f /app/target/app.sock && umask 000 && exec nginx -g 'daemon off;'"]
     depends_on:
       - fileview
     volumes:

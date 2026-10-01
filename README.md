@@ -548,20 +548,6 @@ showstatisticBarConfig: { count: false, view: false, zoom: true }
   不需要任何设置。团队文件 / 共享文件按你在飞牛里设的权限正常放行；静态资源不参与判定。
   看判定过程：`docker logs basemetas-fileview-acl`；出现误拦时的应急开关见下面「按用户区分权限」一节。
   **（0.5.25 起）静态资源判定更严**：只有「请求自己没带 `/vol` 路径」的静态资源请求才被直接放行，带 `?filePath=/vol…` 之类的后缀变体（如 `file.css?filePath=/vol1/x.docx`）一律落到正常权限判定，不再有后缀旁路。
-- ✅ **POST body 里的路径也参与判定（0.5.26 起）**：原先「路径只放在请求体里」的接口（如预览主链路
-  `POST /preview/api/localFile`）**判定不到** —— nginx 的鉴权子请求读不到 body，闸门只能从 query
-  和 Referer 取路径，于是不带 Referer 的 POST 会被放行。**这个问题真机已复现可利用**
-  （普通用户可读出别人的私有文件，且带一个合法 Referer 也能照样绕）。
-  现在由 njs 在鉴权阶段读取 body、把路径交给同一个闸门，不可读直接 403。
-  ⚠️ njs 是动态模块，由**主配置** `app/docker/fv-main.main` 在 `main` 层 `load_module`
-  加载（写在 conf.d 片段里会报 `"load_module" directive is not allowed here`）。
-  ⚠️ **网关镜像必须自带 `njs >= 1.0.1`**：`js_access` 自 njs 0.9.9 才有，
-  而 0.9.9~1.0.0 有访问控制绕过漏洞 CVE-2026-18329，1.0.1 才修好。本项目用 `nginx:1.31`。
-  启动脚本 `fv-njs-boot.sh` 会先探测 `.so` 实际位置再试加载；不可用就自动降级并打醒目
-  WARN（应用仍能打开，但会明确告知保护已关闭，并说明是"缺模块"还是"版本太旧"）。查看当前模式：
-  ```bash
-  docker logs basemetas-fileview-gateway 2>&1 | grep -i fv-njs-boot
-  ```
 - ✅ 存储卷只读挂载，且仅限向导里填写的卷。
 - ✅ **引擎镜像锁到 digest（0.5.25 起）**：`basemetas/fileview:1.5.2@sha256:ebcb1dc6…`。标签是可移动的，上游重推同名标签时内容会变而版本号不变；锁 digest 后拉到的永远是同一份内容。
 - ✅ **数据目录权限 0700（0.5.25 起）**：`fonts` / `data` / `logs` 只给 root。引擎容器实测以 `uid=0(root)` 运行，不受影响；收紧是为了挡住本地其它非 root 用户（`data`/`logs` 里含转换产物与日志）。
@@ -652,38 +638,6 @@ mode=enforce   →   mode=log      # 退回「只记录不拦截」
 
 ### 已知边界
 
-- ✅ **POST body 里的路径（0.5.26 起已修）**。FileView 的正常预览主链路是
-  `POST /preview/api/localFile`（body 里的 `srcRelativePath`），而 nginx 的 `auth_request`
-  **看不到 body**，闸门只能从 query 串或 Referer 取路径 —— 于是「不带 Referer 的 POST」
-  会让闸门落到「未解析到路径 → 放行」。
-
-  这个问题**真机已复现**（2026-09-30）：普通用户用带私有路径的 POST 拿到了 200，
-  而且**带一个合法 Referer 也照样绕过**（闸门拿 Referer 里那个合法路径判定，
-  body 里的非法路径根本没被看过）。
-
-  0.5.26 的修法是加一层 **njs**（`app/docker/body-path-guard.js`）：在鉴权阶段先读 body、
-  把路径交给**同一个闸门**判定，不可读直接 403。因为攻击者不需要"不带 Referer"，
-  单纯 fail-closed 是不够的 —— 必须真正读到 body。
-
-  - 覆盖接口：`/localFile`、`/netFile`、`/status/poll`、`/password/unlock`、
-    `/epub/resource`、`/convert/api/srvFile`；
-  - njs 由主配置 `app/docker/fv-main.main` 在 `main` 层 `load_module` 加载
-    （⚠️ 写在 conf.d 片段里会报 `"load_module" directive is not allowed here`，
-    这个错与镜像带不带 njs **无关**）。
-  - ⚠️ **网关镜像必须自带 `njs >= 1.0.1`**：`js_access` 自 njs 0.9.9 才有，
-    而 0.9.9~1.0.0 有访问控制绕过漏洞 CVE-2026-18329，1.0.1 才修好。
-    本项目用 `nginx:1.31`（自带 1.0.1）。启动脚本 `fv-njs-boot.sh` 会先探测 `.so`
-    实际位置再试加载；不可用就降级并打 WARN（应用仍能打开，但会明确告知
-    "body 路径保护已关闭"，并说明是"缺模块"还是"版本太旧"）。看当前模式：
-    ```bash
-    docker logs basemetas-fileview-gateway 2>&1 | grep -i fv-njs-boot
-    ```
-  - 验证清单：`fpk/tools/VERIFY-0.5.26-ONNAS.md`；结论与判读矩阵：
-    `fpk/tools/POST-BYPASS-VERDICT.md`。
-- ⚠️ `POST /convert/api/srvFile` 是**「读+写」**（`targetPath` 可控、引擎侧无根目录校验）。
-  当前被网关的 location 配置挡在门外（`/convert/` 前缀没有转发，返回 nginx 的 404）。
-  这是**配置遮蔽而非引擎修复** —— 0.5.26 已把它预先纳入 njs 名单，将来若加了该前缀的转发，
-  它会自动受闸门保护。
 - `GET /preview/api/file?filePath=/opt/fileview/data/preview/<文件名>.pdf` 带的是**引擎内部转换产物**
   路径，回溯不出原文件。0.5.16 起会**退回用来源页 URL 里的原始 `path` 判定**，正常流程（浏览器从预览页
   发起）能被正确拦下；只有**手工构造、不带来源页**的请求才无法判定（此时 fail-open 放行）。

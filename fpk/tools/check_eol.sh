@@ -23,21 +23,10 @@ bad=""
 while IFS= read -r f; do
   # 二进制跳过：它们的字节里天然可能含 0x0D
   case "$f" in *.png|*.PNG|*.jpg|*.jpeg|*.ico|*.exe|*.fpk|*.gz) continue ;; esac
-  # ⚠️ 不要用 `wc -c` + `tr -d '\r' | wc -c` 两趟外部命令来比对长度 ——
-  #    在 Windows Git Bash 上每个文件要起 3~4 个进程，27 个文件就要 **50 多秒**
-  #    （sys 时间几乎全是进程创建），selfcheck 会看起来像卡死。
-  #
-  # ⚠️ 也不要用 `grep -q $'\r'` —— 在 Git Bash 里 `$'\r'` 会被处理掉，
-  #    导致**含 CRLF 的文件检不出来**（假阴性，比慢更糟：包会带着坏行尾发出去）。
-  #
-  # 正确做法：bash 内建读入，用字面 CR 做模式匹配（零子进程、无外部工具依赖）。
-  #   注意不能用 `$(<"$f")` —— 命令替换会把行尾的 CR 一起吃掉，同样检不出来。
-  content=""
-  IFS= read -r -d '' content < "$f" 2>/dev/null || true
-  case "$content" in
-    *$'\r'*) bad="${bad}${f}
-" ;;
-  esac
+  a="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
+  b="$(tr -d '\r' < "$f" 2>/dev/null | wc -c | tr -d ' ')"
+  [ -n "$a" ] && [ "$a" != "$b" ] && bad="${bad}${f}
+"
 done < <(find "$DIR" -type f)
 
 if [ -n "$bad" ]; then
