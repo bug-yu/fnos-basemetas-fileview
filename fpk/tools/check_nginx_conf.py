@@ -41,6 +41,9 @@ KNOWN_PREFIXES = (
     "auth_request", "internal", "proxy_pass_request_body", "proxy_method",
     # 静态补丁文件 fv-web-patch.js 用 alias 指到挂进来的 conf.d 目录
     "alias",
+    # 重定向发相对 Location（默认 on 会拼绝对地址，在 unix socket + 网关去端口
+    # 的组合下会把外部端口弄丢 —— 见 nginx.conf 里的说明）
+    "absolute_redirect",
 )
 
 

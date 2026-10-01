@@ -6,6 +6,30 @@
 
 ---
 
+## 0.5.28
+
+修「重定向把外部端口弄丢」—— 用非标准端口访问时，应用中心点「打开」会跳到没有端口的地址。
+
+- **现象**（实测，外部访问在 `:8443`）：
+  ```
+  https://<域名>:8443/app/basemetas-fileview/preview/view
+    → 302 → https://<域名>/app/basemetas-fileview/preview/welcome     ← :8443 没了
+  ```
+  端口一丢，浏览器按 443 去请求就打不到 NAS，页面自然打不开。
+- **真因（两个因素叠加）**：nginx 的 `absolute_redirect` **默认是 `on`** ——
+  `return` / `rewrite` 发出的重定向会被拼成**绝对地址**，用 `$scheme` + `$host`(+端口)。
+  而本 server 监听的是 **unix socket**（没有端口），`$host` 又来自 Host 头 ——
+  飞牛统一网关经 socket 转发时**会把外部端口从 Host 里去掉**（见文件头那段「为什么要自己推导」）。
+  于是 Location 只能写成 `http://<域名>/...`，浏览器再被 HSTS 升级成 https，端口就这么没了。
+  （顺带解释了为什么之前 `/app/basemetas-fileview` 那两条 302 也有同样毛病。）
+- **修法**：在 server 块里加一行 `absolute_redirect off;`。之后 Location 是**相对**的
+  （`/app/basemetas-fileview/...`），浏览器用自己的 origin 解析，scheme / 域名 / **端口**都自然保留。
+- **为什么不用「自己拼绝对地址」**：本包确实有一套 `$ext_proto` / `$ext_authority` 端口推导
+  （给 FileView 的 Host 头用），但它在「首次导航、既无 Referer、Host 又不带端口」时会退化成
+  不带端口 —— 正好是这个场景。相对 Location 不依赖任何推导，永远是浏览器当前的那个 origin。
+- **自检**：`selfcheck.sh` 加了一条断言，`nginx.conf` 里必须有 `absolute_redirect off;`；
+  `check_nginx_conf.py` 的指令白名单补上 `absolute_redirect`（否则会被误报成「可疑指令名」）。
+
 ## 0.5.27
 
 修「应用中心点『打开』是一片空白页」。

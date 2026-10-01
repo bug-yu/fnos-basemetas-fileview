@@ -141,6 +141,12 @@ if grep -q 'api-scope' "$BASE/config/resource" 2>/dev/null; then
 else
   echo "   ✅ 未使用的 api-scope 声明已删除"
 fi
+# 重定向必须发相对 Location，否则在 unix socket + 网关去端口时会丢外部端口
+if grep -qE '^[[:space:]]*absolute_redirect[[:space:]]+off[[:space:]]*;' "$BASE/app/docker/nginx.conf"; then
+  echo "   ✅ 已关闭 absolute_redirect（重定向发相对 Location，端口不会丢）"
+else
+  echo "   ❌ nginx.conf 缺少 absolute_redirect off —— 302 会拼成无端口的绝对地址"; FAILED=1
+fi
 # 闸门判定矩阵单测
 if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3 || command -v python)"

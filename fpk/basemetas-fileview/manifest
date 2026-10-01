@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.27
+version=0.5.28
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.27：修应用中心点「打开」是空白页 —— 那个按钮打开的是入口 url（/preview/view）但不带 ?path=，SPA 没有文件路径可渲染；现在网关把「URI 正好是 /preview/view 且 path 为空」的请求转到欢迎页（顺带当部署自检），带 path 的正常文件预览不受影响。0.5.26：新增「打开方式」两个变体，安装时二选一 —— desktop 版在飞牛桌面窗口内打开（入口 type=iframe，与飞牛自带「Office 预览」同形态），browser 版在浏览器标签页打开（type=url）；两包只差这一个字段、版本号相同，换打开方式需先卸载。0.5.25：安全收紧 —— 逐用户权限闸门不再因 URI 后缀是 .css/.png 等就直接放行（原先「/preview/api/file.css?filePath=/vol1/私密.docx」可绕过判定）；引擎镜像锁到 digest 防上游改内容；data/logs/fonts 目录权限由 0777 收到 0700（引擎实测以 root 运行，不受影响）；删掉未使用的 api-scope 声明。0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。
+changelog=0.5.28：修重定向丢端口 —— 用非标准端口访问时，应用中心点「打开」会从 https://域名:8443/... 跳到 https://域名/...（端口没了，页面打不开）。真因是 nginx 默认 absolute_redirect on 会把 302 的 Location 拼成绝对地址，而本服务监听 unix socket（无端口）、飞牛网关又把外部端口从 Host 里去掉了；现在关掉 absolute_redirect，改发相对 Location，端口自然保留。0.5.27：修应用中心点「打开」是空白页 —— 那个按钮打开的入口 url 不带 ?path=，SPA 没东西可渲染；现在网关把它转到欢迎页（顺带当部署自检）。0.5.26：新增「打开方式」两个变体，安装时二选一 —— desktop 版在飞牛桌面窗口内打开（入口 type=iframe，与飞牛自带「Office 预览」同形态），browser 版在浏览器标签页打开（type=url）；两包只差这一个字段、版本号相同，换打开方式需先卸载。0.5.25：安全收紧 —— 逐用户权限闸门不再因 URI 后缀是 .css/.png 等就直接放行（原先「/preview/api/file.css?filePath=/vol1/私密.docx」可绕过判定）；引擎镜像锁到 digest 防上游改内容；data/logs/fonts 目录权限由 0777 收到 0700（引擎实测以 root 运行，不受影响）；删掉未使用的 api-scope 声明。0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。
 
 ctl_stop=true
 checkport=false

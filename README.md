@@ -98,6 +98,13 @@ python fpk/tools/gen_filetypes.py                 # 生成并覆盖 app/ui/confi
 > 顺便当**部署自检**：能打开就说明网关 → 容器 → 引擎这条链路是通的。
 > 判定逻辑见 `app/docker/nginx.conf` 里的 `map $fv_view_needs_welcome`，
 > 边界由 `fpk/tools/test_welcome_redirect.py` 的 12 条矩阵钉住（带 `?path=` 的预览不会被误转）。
+>
+> **重定向发的是「相对」地址（0.5.28 起）**：`server` 块里关掉了 `absolute_redirect`。
+> 它的默认值 `on` 会把 `return 302` 的 Location 拼成**绝对地址**，而本服务监听的是
+> unix socket（没有端口）、飞牛统一网关又把外部端口从 Host 里去掉了 ——
+> 于是非标准端口访问时重定向会把端口弄丢（`https://域名:8443/...` → `https://域名/...`，
+> 页面直接打不开）。改成相对 Location 后，浏览器用自己的 origin 解析，端口自然保留。
+> `selfcheck.sh` 里有断言盯着这一行，别删。
 
 ### 请求链路
 
@@ -507,7 +514,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.27`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.28`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -522,6 +529,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.28** | 修重定向**丢端口** —— 用非标准端口访问时，应用中心点「打开」会从 `:8443` 跳到没有端口的地址。nginx 默认 `absolute_redirect on` 会把 302 拼成绝对地址，而本服务监听 unix socket（无端口）、网关又把端口从 Host 里去掉了；改为发**相对** Location |
 | **0.5.27** | 修应用中心点「打开」是空白页 —— 那个按钮打开的入口 url 不带 `?path=`，SPA 没东西可渲染；现在网关把它转到**欢迎页**（顺带当部署自检） |
 | **0.5.26** | 「打开方式」做成**两个变体包，安装时二选一** —— `desktop` 版在飞牛桌面窗口内打开（`type: iframe`）、`browser` 版在浏览器标签页打开（`type: url`）；两包只差入口 `type` 一个字段 |
 | **0.5.25** | 安全收紧：权限闸门不再因 URI 后缀是 `.css` / `.png` 就放行（堵住 `file.css?filePath=/vol1/私密.docx` 这类旁路）；引擎镜像锁到 digest；`data` / `logs` / `fonts` 目录权限收到 `0700` |
