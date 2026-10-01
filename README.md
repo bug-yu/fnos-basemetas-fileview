@@ -16,7 +16,7 @@
 | `basemetas-fileview.fpk` | 安装包 —— **构建产物，不在仓库里**（`.gitignore` 排除）。用 `fpk/build.sh` 或 `build.bat` 现场生成，或从 [Releases](../../releases) 下载 |
 | `fpk/basemetas-fileview/` | 安装包工程源码（改配置改这里） |
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
-| `fpk/tools/` | 生成脚本与自检工具（`build_variants.py`、`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
+| `fpk/tools/` | 生成脚本与自检工具（`build_variants.py`、`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`test_acl_decide.py`、`test_welcome_redirect.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
@@ -90,6 +90,14 @@ python fpk/tools/gen_filetypes.py                 # 生成并覆盖 app/ui/confi
 > 两种打开方式**在安装时二选一**（见上面的[安装](#安装)）：源码里存的是 `iframe`（desktop 版），
 > `url`（browser 版）由 `fpk/tools/build_variants.py` 在打包时改这一个字段派生出来。
 > 做成两个包而不是运行时开关，是因为入口配置只在**安装时**读取、且飞牛不允许同版本覆盖安装。
+>
+> **应用中心点「打开」会落到欢迎页（0.5.27 起）**。那个按钮走 `desktop_applaunchname` 指向的入口，
+> 也就是入口 `url`（`/preview/view`），但**不带 `?path=`** —— 那是右键打开文件时才由飞牛追加的。
+> SPA 没有文件路径可渲染，所以原本是一片空白（看起来像部署失败，其实引擎好得很）。
+> 现在网关把「URI 正好是 `/preview/view` 且 `path` 为空」的请求 302 到 `/preview/welcome`，
+> 顺便当**部署自检**：能打开就说明网关 → 容器 → 引擎这条链路是通的。
+> 判定逻辑见 `app/docker/nginx.conf` 里的 `map $fv_view_needs_welcome`，
+> 边界由 `fpk/tools/test_welcome_redirect.py` 的 12 条矩阵钉住（带 `?path=` 的预览不会被误转）。
 
 ### 请求链路
 
@@ -499,7 +507,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.26`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.27`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -514,6 +522,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.27** | 修应用中心点「打开」是空白页 —— 那个按钮打开的入口 url 不带 `?path=`，SPA 没东西可渲染；现在网关把它转到**欢迎页**（顺带当部署自检） |
 | **0.5.26** | 「打开方式」做成**两个变体包，安装时二选一** —— `desktop` 版在飞牛桌面窗口内打开（`type: iframe`）、`browser` 版在浏览器标签页打开（`type: url`）；两包只差入口 `type` 一个字段 |
 | **0.5.25** | 安全收紧：权限闸门不再因 URI 后缀是 `.css` / `.png` 就放行（堵住 `file.css?filePath=/vol1/私密.docx` 这类旁路）；引擎镜像锁到 digest；`data` / `logs` / `fonts` 目录权限收到 `0700` |
 | **0.5.24** | Excel / CSV 恢复缩放控件（上游把 Luckysheet 统计栏整条藏了，缩放滑杆就在里面） |

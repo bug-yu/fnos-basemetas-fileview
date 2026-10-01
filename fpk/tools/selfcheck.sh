@@ -152,6 +152,17 @@ if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
 else
   echo "   ⚠️  本机没有 python，跳过闸门判定矩阵单测"
 fi
+# 「应用中心点打开 → 欢迎页」重定向的判定矩阵
+# （风险在误伤：写宽了会把真正的文件预览也转到欢迎页）
+if [ -n "${PY:-}" ]; then
+  if "$PY" "$(dirname "$0")/test_welcome_redirect.py" >/dev/null 2>&1; then
+    echo "   ✅ 欢迎页重定向判定矩阵通过"
+  else
+    echo "   ❌ 欢迎页重定向判定矩阵失败（跑 $(dirname "$0")/test_welcome_redirect.py 看详情）"; FAILED=1
+  fi
+else
+  echo "   ⚠️  本机没有 python，跳过欢迎页重定向判定矩阵"
+fi
 
 fv_sync_volumes "/vol1,/vol3" >/dev/null
 echo "-- 保存设置 /vol1,/vol3 之后 --"
