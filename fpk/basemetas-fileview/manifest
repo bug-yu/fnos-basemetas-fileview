@@ -1,5 +1,5 @@
 appname=basemetas-fileview
-version=0.5.25
+version=0.5.26
 display_name=FileView 预览
 desc=BaseMetas Fileview 全格式在线预览，支持 DWG/DXF、OFD、Office、三维模型、压缩包等，经飞牛统一网关接入。
 source=thirdparty
@@ -15,7 +15,7 @@ os_min_version=1.2.0
 desktop_uidir=ui
 desktop_applaunchname=basemetas-fileview.view
 
-changelog=0.5.25：安全收紧 —— 逐用户权限闸门不再因 URI 后缀是 .css/.png 等就直接放行（原先「/preview/api/file.css?filePath=/vol1/私密.docx」可绕过判定）；引擎镜像锁到 digest 防上游改内容；data/logs/fonts 目录权限由 0777 收到 0700（引擎实测以 root 运行，不受影响）；删掉未使用的 api-scope 声明。0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。0.5.21：修复卸载容错脚本的 CRLF 行尾。0.5.20：放开单文件预览大小上限，默认 1 GB。
+changelog=0.5.26：文件打开方式改为「在飞牛桌面窗口内打开」—— 入口 type 由 url 改为 iframe，右键「用 FileView 打开」不再跳浏览器新标签页，而是嵌在飞牛桌面里（与飞牛自带「Office 预览」同形态）。0.5.25：安全收紧 —— 逐用户权限闸门不再因 URI 后缀是 .css/.png 等就直接放行（原先「/preview/api/file.css?filePath=/vol1/私密.docx」可绕过判定）；引擎镜像锁到 digest 防上游改内容；data/logs/fonts 目录权限由 0777 收到 0700（引擎实测以 root 运行，不受影响）；删掉未使用的 api-scope 声明。0.5.24：Excel / CSV 预览恢复缩放控件 —— 上游把 Luckysheet 的统计栏整条隐藏了，而缩放滑杆就在统计栏里（现在只把「缩放」这一项放出来，求和/视图仍隐藏）。0.5.23：修复带触摸的电脑上 PDF 预览没有工具栏的问题。0.5.22：按官方部署指南补齐两处生产必做项（挂出引擎工作目录与日志、关掉网络文件预览）。0.5.21：修复卸载容错脚本的 CRLF 行尾。
 
 ctl_stop=true
 checkport=false

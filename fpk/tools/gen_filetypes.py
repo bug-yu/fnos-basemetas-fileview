@@ -134,8 +134,11 @@ def build_config(exts):
             "basemetas-fileview.view": {
                 "title": "用 FileView 打开",
                 "icon": "images/icon_{0}.png",
-                # type=url：在浏览器新标签页打开（官文：「需要完整浏览器能力时，使用 url」）
-                "type": "url",
+                # type=iframe：在飞牛 fnOS 桌面窗口内打开（官文：「需要在飞牛 fnOS 桌面窗口内
+                #   打开应用时，使用 iframe」）。0.5.26 起由 url 改为 iframe —— 右键「用 FileView
+                #   打开」不再跳浏览器新标签页，而是嵌在飞牛桌面里，与飞牛自带「Office 预览」同形态。
+                #   官方「注册文件打开方式」的示例用的正是 iframe + noDisplay。
+                "type": "iframe",
                 "protocol": "",
                 "gatewayPrefix": "/app/basemetas-fileview",
                 "gatewaySocket": "app.sock",
