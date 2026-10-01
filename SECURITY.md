@@ -58,7 +58,7 @@
 
 ### ✅ 5. 路径穿越 / 后缀绕过 —— 准确（且已确认可利用）—— 0.5.25 已修
 
-`SKIP_EXT` 只看 URI 后缀就放行是一处**真实旁路**。审计指出后，我实测验证：
+`SKIP_EXT` 只看 URI 后缀就放行是一处**真实旁路**。验证结果：
 
 ```
 GET /preview/api/file.css?filePath=/vol1/…/sample.docx   → 500
@@ -81,7 +81,7 @@ nginx 的 `auth_request` 看不到 POST body，所以「只在 body 里带路径
 
 ### ✅ 8. `data` / `logs` 目录 0777 —— 准确 —— 0.5.25 已修
 
-**0.5.25 改为 0700**。依据：引擎容器实测 `uid=0(root)`（`docker exec basemetas-fileview-engine id`），root 无视权限位，收紧不影响读写；而 `data`/`logs` 含**转换产物**（被预览文件的中间形态，可能是内容片段）与日志。
+**0.5.25 改为 0700**。依据：引擎容器以 `uid=0(root)` 运行（`docker exec basemetas-fileview-engine id`），root 无视权限位，收紧不影响读写；而 `data`/`logs` 含**转换产物**（被预览文件的中间形态，可能是内容片段）与日志。
 
 ### ✅ 9. 网络文件预览 SSRF —— 准确 —— 0.5.22 已修
 
