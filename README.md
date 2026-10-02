@@ -17,6 +17,7 @@
 | `fpk/basemetas-fileview/` | 安装包工程源码（改配置改这里） |
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
 | `fpk/tools/` | 生成脚本与自检工具（`build_variants.py`、`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`test_acl_decide.py`、`test_welcome_redirect.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
+| `fpk/tools/assets/` | 图标素材：`fileview-logo.png`（BaseMetas FileView 官网 logo）。`gen_icons.py` 用它一次生成 4 个图标文件 |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
@@ -514,7 +515,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.28`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.29`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -529,6 +530,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.29** | 换应用图标 —— 改用 **BaseMetas FileView 官方 logo**（原来是通用的蓝色「文件+放大镜」方块，小尺寸下几乎看不出内容） |
 | **0.5.28** | 修重定向**丢端口** —— 用非标准端口访问时，应用中心点「打开」会从 `:8443` 跳到没有端口的地址。nginx 默认 `absolute_redirect on` 会把 302 拼成绝对地址，而本服务监听 unix socket（无端口）、网关又把端口从 Host 里去掉了；改为发**相对** Location |
 | **0.5.27** | 修应用中心点「打开」是空白页 —— 那个按钮打开的入口 url 不带 `?path=`，SPA 没东西可渲染；现在网关把它转到**欢迎页**（顺带当部署自检） |
 | **0.5.26** | 「打开方式」做成**两个变体包，安装时二选一** —— `desktop` 版在飞牛桌面窗口内打开（`type: iframe`）、`browser` 版在浏览器标签页打开（`type: url`）；两包只差入口 `type` 一个字段 |
