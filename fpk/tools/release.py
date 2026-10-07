@@ -51,19 +51,14 @@ def api(method, url, payload=None, raw=None, ctype="application/json"):
 
 
 def one_line(ver):
-    """从 CHANGELOG 该版本小节里取第一段非标题文字，作为 Release 的一句话说明。"""
+    """从 CHANGELOG 该版本小节里取正文（Release 说明 = 给别人看的，不放排查过程）。"""
     text = open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8").read()
     m = re.search(r"^## %s\s*$" % re.escape(ver), text, re.M)
     if not m:
         return "见仓库 CHANGELOG.md"
     rest = text[m.end():]
     nxt = re.search(r"^## ", rest, re.M)
-    body = rest[:nxt.start()] if nxt else rest
-    for para in [p.strip() for p in body.split("\n\n")]:
-        if not para or para.startswith("#") or para.startswith("|") or para.startswith("---"):
-            continue
-        return para.replace("\n", "")
-    return "见仓库 CHANGELOG.md"
+    return (rest[:nxt.start()] if nxt else rest).strip()
 
 
 def main():
@@ -86,7 +81,7 @@ def main():
         print("查询异常 HTTP %s" % st)
         return 1
 
-    body = one_line(ver) + "\n\n> 详细的排查过程与证据链保存在本地笔记，不入库。"
+    body = one_line(ver)
     st, rel = api("POST", "https://api.github.com/repos/%s/releases" % REPO, {
         "tag_name": tag, "name": tag, "body": body,
         "draft": False, "prerelease": False,

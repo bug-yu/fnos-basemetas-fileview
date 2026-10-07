@@ -148,6 +148,24 @@ def build_config(exts):
                 "allUsers": True,
                 "fileTypes": exts,
                 "noDisplay": True,
+                # 入口设置里的「访问端口 / 访问路径 / 自定义 URL」是框架为入口渲染的，
+                # 而本应用的入口地址由统一网关决定、用户**不应该**去改它（改错了预览就打不开）。
+                #
+                # ⚠️ 这三个 `*Perm` 字段**官方文档里完全没有** —— 是照着一个**已发布的第三方应用**
+                #    （`fygo-browser`，Chrome 浏览器）的 `ui/config` 抄来的（2026-10-07）。
+                #    真正把「访问端口 / 访问路径 / 自定义 URL」三行藏起来的就是它们；
+                #    官方文档只记了 accessPerm 的 editable/readonly/hidden 三态。
+                # ⚠️ 不要用 accessPerm=hidden —— 那会把**整个入口**一起隐藏（实测）。
+                #
+                # accessPerm 用 editable：「桌面访问」保持**可选**
+                #   （管理员可以选「仅管理员」或「设备内所有用户」；
+                #     用 readonly 会把它变灰不可点 —— 用户明确要求可选）。
+                "control": {
+                    "accessPerm": "editable",
+                    "portPerm": "hidden",
+                    "pathPerm": "hidden",
+                    "fullUrlPerm": "hidden"
+                },
             },
         }
     }
@@ -189,7 +207,9 @@ def main():
 
     here = os.path.dirname(os.path.abspath(__file__))
     target = os.path.normpath(os.path.join(here, "..", "basemetas-fileview", "app", "ui", "config"))
-    with open(target, "w", encoding="utf-8") as fh:
+    # ⚠️ newline="\n" 必须写：默认的文本模式在 Windows 上会把 \n 转成 \r\n，
+    #    而这个文件会被打进 .fpk（git 侧有 eol=lf 规则，但打包用的是**工作区**）。
+    with open(target, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(text)
     print()
     print("已写入：", target)

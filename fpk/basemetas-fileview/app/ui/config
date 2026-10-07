@@ -72,7 +72,13 @@
         "py",
         "js"
       ],
-      "noDisplay": true
+      "noDisplay": true,
+      "control": {
+        "accessPerm": "editable",
+        "portPerm": "hidden",
+        "pathPerm": "hidden",
+        "fullUrlPerm": "hidden"
+      }
     }
   }
 }
