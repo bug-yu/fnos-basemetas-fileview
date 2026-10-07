@@ -24,8 +24,22 @@ bad=""
 #    那是二进制构建产物（字节里天然含 0x0D），不是源码 —— 不排除就会误报 CRLF。
 #    build_variants.py 那边也有 drop_pycache + walk 排除，两边保持一致。
 while IFS= read -r f; do
-  # 二进制跳过：它们的字节里天然可能含 0x0D
-  case "$f" in *.png|*.PNG|*.jpg|*.jpeg|*.ico|*.exe|*.fpk|*.gz|*.pyc|*.so|*.dll) continue ;; esac
+  # 二进制跳过 —— 分两层：
+  #   ① 常见二进制扩展名（快路径）
+  #   ② **按内容判定**：前 8KB 里出现 NUL 字节就当二进制
+  # 为什么要有 ②：0.5.55 起包里多了 CAD 预览资源（.wasm / .shx / .dwg / .woff / .ttf …），
+  # 它们的字节里天然含 0x0D，只靠扩展名表会**漏判 → 误报 CRLF → 打不出包** ✗
+  # （2026-10-07 就是这么把打包搞挂的）。
+  # 用「前 8KB 探一次」而不是全文：既能可靠识别二进制，又不用为几十 MB 的
+  # wasm/字体白读两遍全文。
+  case "$f" in
+    *.png|*.PNG|*.jpg|*.jpeg|*.ico|*.exe|*.fpk|*.gz|*.pyc|*.so|*.dll|\
+    *.wasm|*.shx|*.dwg|*.dxf|*.woff|*.woff2|*.ttf|*.otf|*.zip|*.7z|*.rar) continue ;;
+  esac
+  probe_raw="$(head -c 8192 "$f" 2>/dev/null | wc -c | tr -d ' ')"
+  probe_nul="$(head -c 8192 "$f" 2>/dev/null | tr -d '\000' | wc -c | tr -d ' ')"
+  [ -n "$probe_raw" ] && [ "$probe_raw" != "$probe_nul" ] && continue
+
   a="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
   b="$(tr -d '\r' < "$f" 2>/dev/null | wc -c | tr -d ' ')"
   [ -n "$a" ] && [ "$a" != "$b" ] && bad="${bad}${f}

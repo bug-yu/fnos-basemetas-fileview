@@ -42,8 +42,16 @@ VARIANTS = {
     "browser": ("url", "在浏览器标签页打开"),
 }
 
-# 二进制文件里可能凑巧出现 0x0D 0x0A，行尾检查要跳过
-BINARY_EXT = {".png", ".PNG", ".jpg", ".jpeg", ".ico", ".exe", ".gz", ".fpk"}
+# 二进制文件里可能凑巧出现 0x0D 0x0A，行尾检查要跳过。
+# ⚠️ 这只是**快路径**；真正可靠的是 check_eol() 里那个"前 8KB 找 NUL 字节"的按内容判定。
+#    0.5.55 加了 CAD 预览资源（.wasm/.shx/.dwg/.dxf/.woff/.ttf…）之后，这张表一度漏判
+#    → 打包因为"误报 CRLF"直接失败。
+# ⚠️ 改这里时**必须同步改 fpk/tools/check_eol.sh** —— 那边有一份等价实现（两处保持一致）。
+BINARY_EXT = {
+    ".png", ".PNG", ".jpg", ".jpeg", ".ico", ".exe", ".gz", ".fpk",
+    ".wasm", ".shx", ".dwg", ".dxf", ".woff", ".woff2", ".ttf", ".otf",
+    ".zip", ".7z", ".rar", ".pyc", ".so", ".dll",
+}
 
 
 def find_fnpack():
@@ -79,6 +87,15 @@ def check_eol(root):
             if os.path.splitext(fn)[1] in BINARY_EXT:
                 continue
             p = os.path.join(dirpath, fn)
+            # 再按**内容**判一次二进制：前 8KB 出现 NUL 字节就当二进制跳过。
+            # 只靠扩展名表会漏（0.5.55 加 CAD 资源后就漏了 → 打包失败）。
+            try:
+                with open(p, "rb") as fh:
+                    head = fh.read(8192)
+            except OSError:
+                continue
+            if b"\x00" in head:
+                continue
             with open(p, "rb") as fh:
                 data = fh.read()
             if b"\r\n" in data:

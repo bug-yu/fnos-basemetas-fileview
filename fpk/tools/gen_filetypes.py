@@ -29,7 +29,9 @@ import sys
 #   4. 小众编程语言（.lhs/.hrl/.gvy…）→ 不注册，几乎用不到还挤占字符额度
 # ============================================================
 CURATED_GROUPS = {
-    "CAD / 工程图纸（必留）": ["dwg", "dxf"],
+    # ⚠️ CAD 图纸（dwg/dxf）**已从这里移除** —— 它们改由独立的 cad-viewer 页面承接
+    #    （见下面 build_config 里的 basemetas-fileview.cad 入口）。
+    #    原因：FileView 引擎自带的 cad2x 对多重引线、面域边框、字体还原都不行。
     "版式文档（必留）": ["pdf", "ofd"],
     "Word / 文档": ["doc", "docx", "wps", "rtf"],
     "Excel / 表格": ["xls", "xlsx", "csv", "et", "ods"],
@@ -73,7 +75,8 @@ FULL_GROUPS = {
     "音频": ["mp3", "m4a", "wav", "aac", "ogg", "flac", "ac3", "au", "wma", "aif", "aifc", "aiff"],
     "视频": ["mp4", "webm", "avi", "m4v", "mpg", "mpeg", "m2v", "m4p", "ogv", "wmv"],
     "压缩包": ["zip", "jar", "rar", "7z", "tar", "tgz", "gz"],
-    "CAD / 工程图纸": ["dwg", "dxf"],
+    # ⚠️ 原本这里还有 "CAD / 工程图纸": ["dwg", "dxf"] —— 已移除，
+    #    改由独立的 cad-viewer 入口承接（见 build_config）。
     "三维模型": ["gltf", "glb", "obj", "stl", "fbx", "ply", "dae", "wrl", "3ds", "3mf", "3dm"],
     "Visio / 流程图 / 思维导图": [
         "vsd", "vsdm", "vsdx", "vssm", "vssx", "vstm", "vstx", "bpmn", "drawio", "xmind",
@@ -160,6 +163,30 @@ def build_config(exts):
                 # accessPerm 用 editable：「桌面访问」保持**可选**
                 #   （管理员可以选「仅管理员」或「设备内所有用户」；
                 #     用 readonly 会把它变灰不可点 —— 用户明确要求可选）。
+                "control": {
+                    "accessPerm": "editable",
+                    "portPerm": "hidden",
+                    "pathPerm": "hidden",
+                    "fullUrlPerm": "hidden"
+                },
+            },
+            # ── CAD 图纸：走**独立**的 cad-viewer 页面 ────────────────────────
+            # 为什么单独一个入口（而不是让 FileView 转）：
+            #   FileView 引擎自带的 cad2x 对 **多重引线**、**面域边框**、**字体** 还原都不行；
+            #   cad-viewer（+ LibreDWG + 86 个 SHX 字体）这三项都正常（真机对比过）。
+            # 页面与资源：app/docker/cad/（由 fpk/cad-viewer/build.py 生成）
+            # 文件读取：走 /cad/api/raw —— **必须过闸门**（由闸门自己做 ACL 判定）。
+            "basemetas-fileview.cad": {
+                "title": "用 CAD 预览打开",
+                "icon": "images/icon_{0}.png",
+                "type": "iframe",
+                "protocol": "",
+                "gatewayPrefix": "/app/basemetas-fileview",
+                "gatewaySocket": "app.sock",
+                "url": "/app/basemetas-fileview/cad/",
+                "allUsers": True,
+                "fileTypes": ["dwg", "dxf"],
+                "noDisplay": True,
                 "control": {
                     "accessPerm": "editable",
                     "portPerm": "hidden",

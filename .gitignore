@@ -6,6 +6,16 @@
 fpk/tools/fnpack.exe
 fpk/tools/fnpack
 
+# ===== CAD 预览页（fpk/cad-viewer/）=====
+# 构建产物与第三方数据都不进仓库（合计约 80 MB）：
+#   · app/docker/cad/ 是构建输出（页面/JS/WASM/字体），由 fpk/cad-viewer/build.py 生成
+#   · cad-data/ 是 mlightcad/cad-data 的克隆（86 个 SHX 字体等，54 MB）
+#   · node_modules/ 是依赖
+fpk/basemetas-fileview/app/docker/cad/
+fpk/cad-viewer/node_modules/
+fpk/cad-viewer/dist/
+fpk/cad-viewer/cad-data/
+
 # ===== Python =====
 __pycache__/
 *.pyc

@@ -23,6 +23,39 @@
 谁当默认由你在「应用设置 → 打开方式」里决定。
 **如果你也担心误改，把 Office 那几类也指给 FileView 就行。**
 
+## CAD（DWG/DXF）预览为什么是**另一个页面**
+
+`dwg` / `dxf` **不走 FileView**，由独立的 CAD 预览页承接（入口「**用 CAD 预览打开**」）。
+
+原因 —— 真机对比同一张图：
+
+| | FileView 自带的 `cad2x` | cad-viewer |
+|---|---|---|
+| **多重引线**（MULTILEADER） | **完全不显示** ✗ | 正常 ✓ |
+| **面域边框**（REGION） | 不显示 ✗ | 正常 ✓ |
+| **字体** | 失真严重 ✗ | 正常 ✓ |
+
+**字体能正常的关键**：打包了 **86 个 SHX 字体**（来自 `mlightcad/cad-data`）——
+CAD 图纸用的是 SHX 而不是 TTF，之前 `cad2x` 根本没拿到这些字体。
+
+### 组成
+
+```
+浏览器 ──► /app/basemetas-fileview/cad/           静态资源（页面/JS/WASM/字体，alias 直供、不挂鉴权）
+        └─► /app/basemetas-fileview/cad/api/raw   取**原文件** —— **过闸门**（见 SECURITY.md）
+```
+
+| 部分 | 说明 |
+|---|---|
+| 页面与资源 | `app/docker/cad/`，由 **`fpk/cad-viewer/build.py`** 生成（约 80 MB，**不进仓库**，`.gitignore` 已排除） |
+| 上游 | `mlightcad/cad-viewer`（MIT）+ `@mlightcad/libredwg-converter`（**GPL-3.0**）+ `mlightcad/cad-data` |
+| 自动加载 | 飞牛打开文件时会追加 `?path=<绝对路径>`，页面据此自动加载 |
+| **不依赖公网** | 官方示例默认从 `cdn.jsdelivr.net` 取字体/模板数据，本应用**全部本地化**打进包内 |
+
+> ⚠️ **打包前必须先跑** `python fpk/cad-viewer/build.py` ——
+> 否则 `app/docker/cad/` 是空的，装出来的包打不开 CAD 图。
+> （`build_variants.py` 会检查这个目录，缺了会拒绝打包。）
+
 ## 特性
 
 - **`.fpk` 原生安装** —— 应用中心「手动安装」上传即完成，带安装向导、启动/停止/设置，与飞牛自带「Office 预览」同一形态。
@@ -809,7 +842,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 ### 版本号规则
 
-`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.54`（对应引擎 `1.5.2`）：
+`manifest` 的 `version` 与引擎镜像 tag **解耦**，当前为 `0.5.55`（对应引擎 `1.5.2`）：
 
 | 包版本 | 对应引擎 | 用途 |
 |---|---|---|
@@ -824,6 +857,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.55** | **DWG/DXF 改用独立的 CAD 预览页**（开源 `mlightcad/cad-viewer`）—— 引擎自带的 cad2x 对**多重引线**、**面域边框**、**字体**还原都不行（真机对比）；新页面用 **LibreDWG** 解析 + **86 个 SHX 字体**，三项都正常。`dwg`/`dxf` 从 FileView 摘出，改由「用 CAD 预览打开」承接。**字体/模板打进包内、不依赖公网 CDN** ✓。新增 `/cad/api/raw` 读原文件，**由闸门自己判 ACL 且 fail-closed** ✓ |
 | **0.5.54** | ① 入口设置里「访问端口 / 访问路径 / 自定义 URL」三行**不再显示**（用官文未记载的 `portPerm`/`pathPerm`/`fullUrlPerm` = `hidden`；「桌面访问」保持可选）② **压缩包内单个文件的大小上限可以设置了** —— 引擎有第二道独立闸门 `fileview.archive.max-file-size`（默认 100 MB），此前写死、现在向导可调（单位字节，脚本按 MB 换算）。③ 顺带修 `app/ui/config` 被打成 CRLF |
 | **0.5.50** | **安全加固 + 预览体验整合版**。**安全**：堵上「POST body 路径绕过」「fileId 可预测绕过闸门」两个高危，修好随之暴露的「压缩包内文件预览被误拦」，并封掉用不到的 `/convert/api/srvFile`。**体验**：平板在 App 里 Excel **跟手滚动 + 惯性**；**双指缩放对所有格式生效**（表格缩放工作表、Word/PDF 缩放文档）；**Ctrl+滚轮**缩放工作表；**鼠标滚轮**速度恢复正常；**PDF 工具栏始终显示**（可旋转页面）；修 PDF 预览失败 |
 | **0.5.30** | 修**开放 API 预检失效** —— 0.5.25 的审计把 `api-scope` 误判成「未使用」删掉了，而预检脚本一直在调那三个接口，缺声明导致请求必然 403，日志还会误报成「没有解析到授权目录」把人引向错误方向。现已恢复声明 + 预检按 403/401/404 分别给出准确结论 + 自检新增「接口必须有对应 scope」断言。另：`nginx` / `python` 基础镜像补 digest 锁；`SECURITY.md` 新增「风险接受声明」一节 |
