@@ -19,3 +19,7 @@ fpk/basemetas-fileview/app/ui/*       text eol=lf
 fpk/basemetas-fileview/wizard/*       text eol=lf
 fpk/basemetas-fileview/config/*       text eol=lf
 fpk/basemetas-fileview/manifest       text eol=lf
+
+# fpk/tools 下也有要执行的脚本（自检、测试），同样锁 LF —— *.sh/*.py 已有全局规则，
+# 但 *.js（如 test_web_patch.js）没有，core.autocrlf=true 时会被转成 CRLF。
+*.js                                  text eol=lf

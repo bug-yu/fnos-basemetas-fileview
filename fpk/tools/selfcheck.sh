@@ -19,6 +19,35 @@ for f in "$BASE"/cmd/* "$BASE"/app/docker/fv-volumes.sh; do
 done
 
 echo
+echo "== nginx.conf 解析层自检（本地没有 docker 时的替代手段）=="
+# ⚠️ 这一步以前**没接进自检** —— 0.5.31 首版就是因为缺它才翻车：
+#    把 `proxy_pass http://aclbody/guard;` 写进了 regex location，
+#    nginx 启动期 emerg（"proxy_pass" cannot have URI part in location given by
+#    regular expression...）→ 网关容器无限重启，而本地自检全绿。
+#    教训：**检查器存在 ≠ 检查器在跑**。凡是有 check_*.py 的，都要接进自检。
+PY_NGX="$(command -v python3 || command -v python)"
+if [ -z "$PY_NGX" ]; then
+  echo "   ⚠️  本机没有 python，跳过 nginx 解析层自检"
+else
+  NGX_OUT="$("$PY_NGX" "$(dirname "$0")/check_nginx_conf.py" "$BASE/app/docker/nginx.conf" 2>&1)"
+  if [ $? -eq 0 ]; then
+    echo "   ✅ nginx.conf 解析层自检通过（花括号/引号/语句结尾/指令名/正则/proxy_pass URI）"
+  else
+    echo "   ❌ nginx.conf 解析层自检失败："
+    printf '%s\n' "$NGX_OUT" | sed 's/^/      /'
+    FAILED=1
+  fi
+  MAP_OUT="$("$PY_NGX" "$(dirname "$0")/check_nginx_map.py" 2>&1)"
+  if [ $? -eq 0 ]; then
+    echo "   ✅ nginx map 求值仿真通过"
+  else
+    echo "   ❌ nginx map 求值仿真失败："
+    printf '%s\n' "$MAP_OUT" | sed 's/^/      /'
+    FAILED=1
+  fi
+fi
+
+echo
 echo "== 挂载段改写验证 =="
 WORK="$(mktemp -d)"
 cp "$BASE/app/docker/docker-compose.yaml" "$WORK/docker-compose.yaml"
@@ -116,12 +145,17 @@ else
 fi
 
 echo
-echo "-- 安全收紧断言（0.5.25）--"
-# 引擎镜像必须锁 digest：只写标签时上游重推同名标签会静默换内容
-if grep -qE '^ *image: basemetas/fileview:1\.5\.2@sha256:[0-9a-f]{64}$' "$BASE/app/docker/docker-compose.yaml"; then
-  echo "   ✅ 引擎镜像已锁 digest"
+echo "-- 安全收紧断言（0.5.25 起）--"
+# 三个镜像都必须锁 digest：只写标签时上游重推同名标签会静默换内容
+# （引擎镜像 0.5.25 起锁；nginx / python 两个基础镜像 0.5.30 起补上）
+COMPOSE="$BASE/app/docker/docker-compose.yaml"
+UNPINNED="$(grep -E '^[[:space:]]*image:[[:space:]]' "$COMPOSE" | grep -vE '@sha256:[0-9a-f]{64}[[:space:]]*$' || true)"
+if [ -n "$UNPINNED" ]; then
+  echo "   ❌ 有镜像未锁 digest（只写标签会被上游重推换内容）："
+  printf '%s\n' "$UNPINNED" | sed 's/^/        /'
+  FAILED=1
 else
-  echo "   ❌ 引擎镜像未锁 digest（只写标签会被上游重推换内容）"; FAILED=1
+  echo "   ✅ 全部镜像已锁 digest（共 $(grep -cE '^[[:space:]]*image:[[:space:]]' "$COMPOSE") 个）"
 fi
 # 目录权限不得再出现 0777
 if grep -rn 'chmod 0777' "$BASE/cmd" "$BASE/app" >/dev/null 2>&1; then
@@ -135,13 +169,160 @@ if grep -q 'own and own.startswith("/vol")' "$BASE/app/docker/fv-acl-gate.py"; t
 else
   echo "   ❌ 闸门扩展名短路缺少 /vol 保护（旁路风险）"; FAILED=1
 fi
-# api-scope 声明应已删除（未使用）
-if grep -q 'api-scope' "$BASE/config/resource" 2>/dev/null; then
-  echo "   ❌ config/resource 仍声明未使用的 api-scope"; FAILED=1
+# api-scope 必须声明，且必须覆盖预检脚本实际调用的每个开放接口。
+# ⚠️ 0.5.25 的审计把 api-scope 判为「未使用」删掉了，而预检从 0.5.9 起就在调这三个接口
+#    → 请求一律 403/200003，探针还会把结论误报成「没有授权目录」。0.5.30 恢复并加此断言，
+#    防止再被当成「未使用」删掉。
+RES="$BASE/config/resource"
+PROBE="$BASE/app/docker/fv-acl-probe.sh"
+if [ ! -f "$RES" ]; then
+  echo "   ❌ config/resource 不存在"; FAILED=1
 else
-  echo "   ✅ 未使用的 api-scope 声明已删除"
+  NEEDED=""
+  for req in $(grep -oE 'trim\.[a-zA-Z.]+' "$PROBE" 2>/dev/null | sort -u); do
+    case "$req" in
+      trim.file.getSharedAccessibleFolders|trim.file.delSharedAccessibleFolder) sc="trim.file.sharedAccess" ;;
+      trim.file.getUserAccessibleFolders)  sc="trim.file.userAccess" ;;
+      trim.file.checkUserACL)              sc="trim.file.userAcl" ;;
+      trim.file.convertPath)               sc="trim.file.path" ;;
+      trim.system.getPlatformConfig)       sc="trim.system.getPlatformConfig" ;;
+      *) continue ;;
+    esac
+    NEEDED="$NEEDED $sc"
+  done
+  NEEDED="$(printf '%s\n' $NEEDED | sort -u | tr '\n' ' ')"
+  BAD=""
+  for sc in $NEEDED; do
+    grep -qF "\"$sc\"" "$RES" || BAD="$BAD $sc"
+  done
+  if [ -n "$BAD" ]; then
+    echo "   ❌ config/resource 缺少预检脚本需要的 api-scope：$BAD"; FAILED=1
+  else
+    echo "   ✅ api-scope 已声明，覆盖预检脚本调用的全部开放接口（$(printf '%s' "$NEEDED" | wc -w) 个）"
+  fi
 fi
-# 重定向必须发相对 Location，否则在 unix socket + 网关去端口时会丢外部端口
+# ---- body 代理（POST body 路径绕过）断言 ----
+# 背景：路径只在请求体里的接口无法由 auth_request 判定（子请求在 ACCESS 阶段执行，
+# 请求体还没被读），只靠 Referer 会被「合法 Referer 掩护非法 body」绕过。
+# 0.5.31 起这几个接口改由 nginx 整体代理到闸门的 /guard。以下断言盯着这条链路别被改坏。
+NGX="$BASE/app/docker/nginx.conf"
+GATE="$BASE/app/docker/fv-acl-gate.py"
+
+if grep -qE '^upstream aclbody \{' "$NGX"; then
+  echo "   ✅ body 代理 upstream（aclbody）存在"
+else
+  echo "   ❌ 缺少 upstream aclbody"; FAILED=1
+fi
+
+# ⚠️ 必须用 location =（精确匹配）。regex / 命名 location 里 proxy_pass 不允许带
+#    字面量 URI 部分 —— nginx 会 emerg 起不来（0.5.31 首版就是这么翻的车：
+#    "proxy_pass" cannot have URI part in location given by regular expression ...）。
+#    语法层面的通用检查见下面的 check_nginx_conf.py（第 6 条规则）。
+for ep in 'preview/api/localFile' 'preview/api/password/unlock'; do
+  if grep -qE "^ *location = /app/basemetas-fileview/$ep \{" "$NGX"; then
+    echo "   ✅ $ep 用精确匹配（location =）"
+  else
+    echo "   ❌ $ep 必须是 location = 精确匹配（regex 里 proxy_pass 不能带 URI）"; FAILED=1
+  fi
+done
+
+if grep -qE 'proxy_pass http://aclbody/guard;' "$NGX"; then
+  echo "   ✅ body-path 接口已交给闸门代理（/guard）"
+else
+  echo "   ❌ 未把 body-path 接口交给闸门代理"; FAILED=1
+fi
+
+if grep -qE '^ *location @fv_guard_direct \{' "$NGX"; then
+  echo "   ✅ body 代理的 fail-open 落点（@fv_guard_direct）存在"
+else
+  echo "   ❌ 缺少 @fv_guard_direct（闸门挂掉时 POST 会直接 502）"; FAILED=1
+fi
+
+# fail-open 要能触发：error_page 只处理 nginx 自己产生的错误，
+# **上游（闸门）返回的** 502 必须靠 proxy_intercept_errors on 才拦得下来。
+if awk '/location = \/app\/basemetas-fileview\/preview\/api\/localFile/,/^    }/' "$NGX" \
+     | grep -qE '^ *proxy_intercept_errors on;'; then
+  echo "   ✅ body 代理已开 proxy_intercept_errors（上游 502 才能触发 fail-open）"
+else
+  echo "   ❌ body 代理缺少 proxy_intercept_errors on（上游 502 不会触发 fail-open）"; FAILED=1
+fi
+
+# srvFile 必须封禁；password/unlock 改为走闸门（**不**封禁）
+if grep -qE "^ *location = /app/basemetas-fileview/convert/api/srvFile \{" "$NGX"; then
+  echo "   ✅ 已封禁 /convert/api/srvFile（root 写）"
+else
+  echo "   ❌ 未封禁 /convert/api/srvFile"; FAILED=1
+fi
+if grep -qE "^ *location = /app/basemetas-fileview/preview/api/password/unlock \{[^}]*return 403" "$NGX"; then
+  echo "   ❌ password/unlock 被整条封禁了 —— 应改为走闸门（否则加密压缩包解锁功能失效）"; FAILED=1
+else
+  echo "   ✅ password/unlock 未被封禁（走闸门判定，功能保留）"
+fi
+
+# 闸门的接口清单必须覆盖 nginx 代理的那两个接口
+GATE_BLOCK="$(sed -n '/^BODY_PATH_FIELDS = {/,/^}/p' "$GATE")"
+GATE_OK=1
+for ep in 'localFile' 'password/unlock'; do
+  printf '%s' "$GATE_BLOCK" | grep -qF "/preview/api/$ep" || GATE_OK=0
+done
+if [ "$GATE_OK" -eq 1 ]; then
+  echo "   ✅ 闸门 BODY_PATH_FIELDS 覆盖 nginx 代理的两个接口"
+else
+  echo "   ❌ 闸门 BODY_PATH_FIELDS 与 nginx 代理的接口不一致"; FAILED=1
+fi
+
+# ---- fileId 系接口校验（0.5.34）----
+# fileId = "preview_" + md5(原始路径)[:16]，不具备保密性；而 /files/{fileId} 的 path
+# 参数可选，缺省时引擎会用缓存的原始路径把文件吐出来 → 绕过闸门。对策：要求自带 filePath。
+if grep -qE '^FILEID_RE = re\.compile' "$GATE"; then
+  echo "   ✅ 闸门有 fileId 识别正则（FILEID_RE）"
+else
+  echo "   ❌ 闸门缺少 FILEID_RE"; FAILED=1
+fi
+if grep -qE '^def current_fileid_guard\(\)' "$GATE"; then
+  echo "   ✅ 闸门有 fileid_guard 开关"
+else
+  echo "   ❌ 闸门缺少 current_fileid_guard"; FAILED=1
+fi
+if grep -q '防 fileId 推导绕过' "$GATE"; then
+  echo "   ✅ 闸门对「不带 filePath 的 fileId 请求」有拒绝分支"
+else
+  echo "   ❌ 闸门缺少 fileId 拒绝分支"; FAILED=1
+fi
+# ⚠️ 出厂必须是 log（不是 enforce）—— 合法流程里 /page/{n} 与 /pages 没有日志样本，
+#    盲切 enforce 有误伤风险。这条断言防止有人"顺手"把它改成 enforce。
+if grep -qE '^DEFAULT_FILEID_GUARD = "log"' "$GATE"; then
+  echo "   ✅ fileid_guard 出厂默认 log（先观察，符合既定节奏）"
+else
+  echo "   ❌ fileid_guard 出厂默认必须是 log（先观察再切 enforce）"; FAILED=1
+fi
+
+# ---- 压缩包内文件（复合路径）必须能被正确还原 ----
+# 引擎把包内文件表示成 <压缩包路径>/<包内路径>/<文件名>，该复合路径在文件系统上不存在。
+# 若不还原成压缩包再判，包内文件会被一律拦死（0.5.33 就是这样把该功能弄坏的）。
+if grep -qE '^def resolve_archive_prefix\(' "$GATE"; then
+  echo "   ✅ 闸门有压缩包复合路径还原（resolve_archive_prefix）"
+else
+  echo "   ❌ 闸门缺少 resolve_archive_prefix —— 压缩包内文件会被误拦"; FAILED=1
+fi
+if grep -qE '^def is_file\(' "$GATE"; then
+  echo "   ✅ 存在性探测已抽成 is_file（便于单测打桩）"
+else
+  echo "   ❌ 缺少 is_file"; FAILED=1
+fi
+if grep -q '压缩包内文件：按压缩包判定' "$GATE"; then
+  echo "   ✅ 压缩包内文件按压缩包判 ACL（不是退回来源页）"
+else
+  echo "   ❌ 缺少压缩包内文件的判定分支"; FAILED=1
+fi
+if grep -qE '^ *echo "fileid_guard=' "$BASE/app/docker/fv-volumes.sh"; then
+  echo "   ✅ acl.conf 模板写出 fileid_guard"
+else
+  echo "   ❌ acl.conf 模板缺少 fileid_guard"; FAILED=1
+fi
+
+# 重定向必须发相对 Location，否则在 unix socket + 网关去端口时会丢外部端
+口
 if grep -qE '^[[:space:]]*absolute_redirect[[:space:]]+off[[:space:]]*;' "$BASE/app/docker/nginx.conf"; then
   echo "   ✅ 已关闭 absolute_redirect（重定向发相对 Location，端口不会丢）"
 else
@@ -157,6 +338,27 @@ if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
   fi
 else
   echo "   ⚠️  本机没有 python，跳过闸门判定矩阵单测"
+fi
+# body 代理判定矩阵单测（用桩引擎，不依赖 docker）
+if [ -n "${PY:-}" ]; then
+  if "$PY" "$(dirname "$0")/test_body_guard.py" >/dev/null 2>&1; then
+    echo "   ✅ body 代理判定矩阵单测通过（含「合法 Referer + 私有 body → 403」）"
+  else
+    echo "   ❌ body 代理判定矩阵失败（跑 $(dirname "$0")/test_body_guard.py 看详情）"; FAILED=1
+  fi
+else
+  echo "   ⚠️  本机没有 python，跳过 body 代理判定矩阵"
+fi
+# 浏览器端补丁的逻辑测试（用桩 DOM 在 node 里跑，不需要浏览器）
+# 覆盖：触摸滚动兜底必须「页面不可滚 + 表格区域内」才生效 —— 否则会与 PDF.js 叠加成双滚动
+if command -v node >/dev/null 2>&1; then
+  if node "$(dirname "$0")/test_web_patch.js" >/dev/null 2>&1; then
+    echo "   ✅ 浏览器端补丁逻辑测试通过（触摸滚动兜底的作用域与方向）"
+  else
+    echo "   ❌ 浏览器端补丁逻辑测试失败（跑 $(dirname "$0")/test_web_patch.js 看详情）"; FAILED=1
+  fi
+else
+  echo "   ⚠️  本机没有 node，跳过浏览器端补丁逻辑测试"
 fi
 # 「应用中心点打开 → 欢迎页」重定向的判定矩阵
 # （风险在误伤：写宽了会把真正的文件预览也转到欢迎页）

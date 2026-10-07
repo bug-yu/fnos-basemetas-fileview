@@ -317,19 +317,44 @@ fv_materialize_env() {
 # ⚠️ 只在文件不存在时写入默认值；已存在的值不覆盖，以免冲掉手工改的应急设置。
 fv_write_acl_conf() {
   [ -n "${TRIM_PKGVAR:-}" ] || return 0
-  local conf="${TRIM_PKGVAR}/acl.conf" mode="${1:-}"
-  if [ -z "$mode" ] && [ -r "$conf" ]; then
-    mode="$(sed -n 's/^mode=//p' "$conf" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+  local conf="${TRIM_PKGVAR}/acl.conf" mode="${1:-}" guard="" fidguard=""
+  if [ -r "$conf" ]; then
+    # 手工改过的值必须留住 —— 这个文件是**应急开关**，被覆盖就失去意义了。
+    [ -n "$mode" ] || mode="$(sed -n 's/^mode=//p' "$conf" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+    guard="$(sed -n 's/^body_guard=//p' "$conf" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
+    fidguard="$(sed -n 's/^fileid_guard=//p' "$conf" 2>/dev/null | head -n 1 | tr -d '[:space:]')"
   fi
-  case "$mode" in log) ;; *) mode="enforce" ;; esac
+  case "$mode"     in log) ;; *) mode="enforce" ;; esac
+  case "$guard"    in log) ;; *) guard="enforce" ;; esac
+  # ⚠️ fileid_guard 默认 **log**（不是 enforce）：合法流程里 /files/{fileId}/page/{n}
+  #    与 /pages 没有日志样本，盲切 enforce 有误伤风险。先观察，确认日志里没有合法
+  #    请求被记，再手工改成 enforce。详见 fv-acl-gate.py 头部注释。
+  case "$fidguard" in enforce) ;; *) fidguard="log" ;; esac
 
   mkdir -p "$TRIM_PKGVAR" 2>/dev/null
   {
     echo "# FileView 逐用户权限闸门开关（由应用写入，改完立即生效，不必重启容器）"
+    echo "# 看判定过程： docker logs basemetas-fileview-acl"
+    echo "#"
+    echo "# mode —— 总体开关"
     echo "#   enforce 不可读的文件直接返回 403（默认）"
     echo "#   log     只记录判定结果，不拦截（出现误拦时的应急开关）"
-    echo "# 看判定过程： docker logs basemetas-fileview-acl"
     echo "mode=${mode}"
+    echo "#"
+    echo "# body_guard —— 只管「路径只在请求体里」的接口那一层"
+    echo "#   （POST /preview/api/localFile、/preview/api/password/unlock）"
+    echo "#   这些接口的路径 nginx 的 auth_request 看不到，改由闸门读 body 判定后再转发；"
+    echo "#   enforce 判定不过就 403（默认）"
+    echo "#   log     只记录、仍然转发（单独回退这一层用，不影响 mode）"
+    echo "body_guard=${guard}"
+    echo "#"
+    echo "# fileid_guard —— 只管 fileId 系接口（/preview/api/files/<fileId>）"
+    echo "#   fileId 是**原始路径的 md5 前 16 位**，不具备保密性；而这类请求里没有路径参数，"
+    echo "#   闸门天然判不到，引擎会用缓存里的原始路径把文件吐出来 —— 构成绕过。"
+    echo "#   对策：要求请求自带 filePath。"
+    echo "#   log      只记录「不带 filePath」的请求（**出厂默认**，先观察）"
+    echo "#   enforce  直接拒绝这类请求（观察确认无误伤后再改）"
+    echo "fileid_guard=${fidguard}"
   } > "$conf" 2>/dev/null
   return 0
 }

@@ -11,6 +11,23 @@ nginx.conf 语法自检（本地无 Docker 时的替代手段）
   3. 语句没有以 ; { } 结尾（漏分号）
   4. `location ~ <regex>` 里的正则无法编译
   5. 可疑指令名（拼写错误）—— 仅在非 map 块内检查
+  6. **`proxy_pass` 带字面量 URI 部分，却处在 regex / 命名 / if / limit_except 块里**
+
+⚠️ 关于第 6 条：nginx 源码 `ngx_http_proxy_pass()` 里，
+   `if (clcf->named || clcf->regex || clcf->predicate || clcf->noname) { if (plcf->vars.uri.len) 报错 }`
+   —— 报错信息是
+     "proxy_pass" cannot have URI part in location given by regular expression,
+     or inside predicate location, or inside named location, or inside "if" statement,
+     or inside "limit_except" block
+   这是**启动期 emerg**：整个网关容器会起不来、无限重启。
+   注意：**含 `$` 变量的写法不受限**（同函数里 `if (n) { ... return NGX_CONF_OK; }` 提前返回），
+   所以本检查只针对字面量 URI 部分 —— 与 nginx 行为一致。
+
+   历史教训（2026-10-06）：0.5.31 首版把 body-path 接口的代理写成
+   `location ~ ^…/preview/api/(localFile|password/unlock)$ { proxy_pass http://aclbody/guard; }`
+   → 真机网关无限重启。当时本脚本没有第 6 条检查、也**没被 selfcheck 调用**，
+   两道防线都缺。现在两处都补上了。**能用 `location =`（精确匹配）就别用 regex**：
+   精确匹配不受这条限制，而且优先级高于任何 regex。
 
 ⚠️ 关于 map 块：`map` 的块体里每行是「键 值;」而不是「指令 参数;」，
    键可以是 default、空串、带引号的正则。这里是常见的误报来源，必须跳过。
@@ -39,6 +56,9 @@ KNOWN_PREFIXES = (
     "auth_basic", "ssl_certificate", "umask", "pid", "user", "error_page",
     # 逐用户权限闸门用到（见 app/docker/fv-acl-gate.py）
     "auth_request", "internal", "proxy_pass_request_body", "proxy_method",
+    # body-path 接口的 fail-open：必须拦下**上游（闸门）返回的** 502，
+    # 否则 error_page 不触发、兜底直连引擎那条路走不到
+    "proxy_intercept_errors",
     # 静态补丁文件 fv-web-patch.js 用 alias 指到挂进来的 conf.d 目录
     "alias",
     # 重定向发相对 Location（默认 on 会拼绝对地址，在 unix socket + 网关去端口
@@ -63,6 +83,37 @@ def strip_comment(line: str) -> str:
         else:
             out.append(ch)
     return "".join(out)
+
+
+# 这些块里 proxy_pass 不允许带字面量 URI 部分（见文件头第 6 条）
+RESTRICTED_TAGS = {"@regex", "@named", "@if", "@limit_except", "@predicate"}
+
+
+def block_tag(stripped: str) -> str:
+    """给一个块的开头行打标签，用于判断「当前处在哪类块里」。"""
+    if stripped.startswith("location"):
+        rest = stripped[len("location"):].strip()
+        if rest.startswith("@"):
+            return "@named"
+        if rest.startswith("~"):
+            return "@regex"
+        return "@prefix"
+    if stripped.startswith("if") and re.match(r"if\s*[({]", stripped):
+        return "@if"
+    if stripped.startswith("limit_except"):
+        return "@limit_except"
+    return stripped.split()[0] if stripped.split() else ""
+
+
+def has_literal_uri_part(arg: str) -> bool:
+    """proxy_pass 的参数里是否有**字面量** URI 部分。
+
+    含 `$` 变量的一律返回 False —— nginx 对变量形式会提前 return，不做这项检查。
+    """
+    if "$" in arg:
+        return False
+    m = re.match(r"^https?://[^/]*(/.*)$", arg)
+    return bool(m)
 
 
 def main() -> int:
@@ -115,10 +166,22 @@ def main() -> int:
         if stripped.startswith("sub_filter "):
             sub_filter_count += 1
 
+        # ★ proxy_pass 带字面量 URI 部分，且处在 regex / 命名 / if / limit_except 块里
+        #   —— nginx 启动期 emerg，整个容器起不来。见文件头第 6 条。
+        if stripped.startswith("proxy_pass "):
+            arg = stripped[len("proxy_pass"):].strip().rstrip(";").strip()
+            if has_literal_uri_part(arg) and any(t in RESTRICTED_TAGS for t in stack):
+                bad = [t for t in stack if t in RESTRICTED_TAGS]
+                problems.append(
+                    f"L{lineno}: proxy_pass 带字面量 URI 部分，但处在 {bad[-1]} 块里 "
+                    f"-> {arg}（nginx 会 emerg 起不来；改用 location = 精确匹配，"
+                    f"或改成含 $ 变量的写法）")
+
         # 维护括号深度与块栈
         opens, closes = text.count("{"), text.count("}")
+        tag = block_tag(stripped)
         for _ in range(opens):
-            stack.append(head)
+            stack.append(tag)
         depth += opens
         for _ in range(closes):
             if stack:

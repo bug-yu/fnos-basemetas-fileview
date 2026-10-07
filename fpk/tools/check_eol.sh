@@ -20,14 +20,17 @@ DIR="${1:-$HERE/../basemetas-fileview}"
 [ -d "$DIR" ] || { echo "目录不存在：$DIR"; exit 2; }
 
 bad=""
+# ⚠️ 必须排除 __pycache__：本地跑过一次 py_compile / 导入就会生成 .pyc，
+#    那是二进制构建产物（字节里天然含 0x0D），不是源码 —— 不排除就会误报 CRLF。
+#    build_variants.py 那边也有 drop_pycache + walk 排除，两边保持一致。
 while IFS= read -r f; do
   # 二进制跳过：它们的字节里天然可能含 0x0D
-  case "$f" in *.png|*.PNG|*.jpg|*.jpeg|*.ico|*.exe|*.fpk|*.gz) continue ;; esac
+  case "$f" in *.png|*.PNG|*.jpg|*.jpeg|*.ico|*.exe|*.fpk|*.gz|*.pyc|*.so|*.dll) continue ;; esac
   a="$(wc -c < "$f" 2>/dev/null | tr -d ' ')"
   b="$(tr -d '\r' < "$f" 2>/dev/null | wc -c | tr -d ' ')"
   [ -n "$a" ] && [ "$a" != "$b" ] && bad="${bad}${f}
 "
-done < <(find "$DIR" -type f)
+done < <(find "$DIR" -type f -not -path '*/__pycache__/*')
 
 if [ -n "$bad" ]; then
   echo "❌ 以下文件含 CRLF 行尾，不能打包："

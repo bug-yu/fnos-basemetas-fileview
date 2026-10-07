@@ -6,5 +6,10 @@
         "path": "docker"
       }
     ]
-  }
+  },
+  "api-scope": [
+    "trim.file.sharedAccess",
+    "trim.file.userAcl",
+    "trim.system.getPlatformConfig"
+  ]
 }

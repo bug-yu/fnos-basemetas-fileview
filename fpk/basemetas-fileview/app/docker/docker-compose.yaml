@@ -54,7 +54,11 @@ services:
 
   # 统一网关适配层：监听 Unix Socket，转发给 FileView
   gateway:
-    image: nginx:alpine
+    # 锁到 digest，理由同引擎镜像（标签可移动，上游重推同名 tag 内容会变）。
+    # ⚠️ 代价：锁了就不会自动拿到基础镜像的安全更新 —— 需要升级时手动改这一行的 digest。
+    #    查当前 digest：docker buildx imagetools inspect library/nginx:alpine
+    #    2026-09-26 的 nginx:alpine（多架构清单，含 amd64 / arm64）
+    image: nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
     container_name: basemetas-fileview-gateway
     restart: unless-stopped
     # ⚠️ 必须先删掉残留的 app.sock 再启动。
@@ -86,7 +90,12 @@ services:
   # 开关：${TRIM_PKGVAR}/acl.conf 里的 mode=log（只记录）/ enforce（真正拦截，默认）。
   #       闸门每次请求现读该文件，改完立即生效，不用重启容器。
   acl:
-    image: python:3-alpine
+    # 锁到 digest，理由同引擎镜像。闸门脚本只用 Python 标准库（os / sys / pwd / grp），
+    # 不装任何 pip 包，所以冻结 Python 版本没有副作用。
+    # ⚠️ 代价：锁了就不会自动拿到基础镜像的安全更新 —— 需要升级时手动改这一行的 digest。
+    #    查当前 digest：docker buildx imagetools inspect library/python:3-alpine
+    #    2026-10-04 的 python:3-alpine（多架构清单，含 amd64 / arm64）
+    image: python:3-alpine@sha256:f6a589d43c42b9e7f7dc67a12d37132491f362859a5d750607710cc56da3bc72
     container_name: basemetas-fileview-acl
     restart: unless-stopped
     depends_on:

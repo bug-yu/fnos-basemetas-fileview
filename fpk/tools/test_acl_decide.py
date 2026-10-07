@@ -17,6 +17,7 @@ Handler._decide，断言每条用例的「放行/拒绝 + 判定用的路径」�
 """
 
 import importlib.util
+import hashlib
 import os
 import sys
 
@@ -70,6 +71,9 @@ def run():
 
     mod.can_read = fake_can_read
     mod.current_mode = lambda: "enforce"
+    # fileId 系接口的档位（出厂默认 log，可切 enforce）
+    fid_state = {"v": "log"}
+    mod.current_fileid_guard = lambda: fid_state["v"]
 
     cases = [
         # (说明, uid, uri, headers, ref, 期望 allow, 期望判定路径)
@@ -126,10 +130,81 @@ def run():
             print("        ❌ 期望 allow=%s path=%s" % (want_allow, want_path))
 
     print()
+    print("  —— fileId 系接口（0.5.34 新增校验）——")
+    # fileId = "preview_" + md5(原始绝对路径)[:16]（已用真机数据验证），
+    # 所以知道路径就能算出来；而这类请求里没有路径参数 → 闸门判不到 →
+    # 引擎在 path 缺省时会用缓存里的**原始路径**把文件吐出来 → 绕过 ACL。
+    # 对策：要求请求自带 filePath；fileid_guard=enforce 时拒绝「不带」的请求。
+    ok_path = "/vol1/ok.docx"
+    sec_path = "/vol2/secret.docx"
+    ok_fid = "preview_" + hashlib.md5(ok_path.encode()).hexdigest()[:16]
+    sec_fid = "preview_" + hashlib.md5(sec_path.encode()).hexdigest()[:16]
+
+    # 捕获闸门日志：用来断言「md5 一致时不应产生『观察』记录」
+    # （曾经踩过：拿带 `preview_` 前缀的 fileId 去比不带前缀的 md5 → 永远不一致）
+    logs = []
+    mod.log = lambda m: logs.append(m)
+
+    fid_cases = [
+        # (说明, uid, uri, headers, ref, guard, 期望 allow, 期望判定路径, 期望出现「观察」记录)
+        ("[log] 不带 filePath → 放行并记录（出厂默认档，不误伤）",
+         "1000", "/preview/api/files/%s" % sec_fid, {}, "", "log", True, None, False),
+
+        ("[log] 带一致的 filePath + 可读 → 放行，且**不应**报 md5 不一致",
+         "1000", "/preview/api/files/%s?filePath=%s" % (ok_fid, ok_path),
+         {}, "", "log", True, ok_path, False),
+
+        ("[log] 带一致的 filePath + 不可读 → 仍拦截（正常保护不受影响）",
+         "1000", "/preview/api/files/%s?filePath=%s" % (sec_fid, sec_path),
+         {}, "", "log", False, sec_path, False),
+
+        ("★ [log] 带**自己的** filePath + **别人的** fileId → 按自己的路径判 → 放行，并报不一致",
+         "1000", "/preview/api/files/%s?filePath=%s" % (sec_fid, ok_path),
+         {}, "", "log", True, ok_path, True),
+
+        ("★ [enforce] 不带 filePath → 拦截（堵住绕过）",
+         "1000", "/preview/api/files/%s" % sec_fid, {}, "", "enforce", False, None, False),
+
+        ("[enforce] 带一致的 filePath + 可读 → 放行（不误伤正常流程）",
+         "1000", "/preview/api/files/%s?filePath=%s" % (ok_fid, ok_path),
+         {}, "", "enforce", True, ok_path, False),
+
+        ("★ [enforce] /page/N 不带 filePath → 拦截",
+         "1000", "/preview/api/files/%s/page/2" % sec_fid, {}, "", "enforce", False, None, False),
+
+        ("★ [enforce] /pages 不带 filePath → 拦截",
+         "1000", "/preview/api/files/%s/pages" % sec_fid, {}, "", "enforce", False, None, False),
+
+        ("[enforce] /page/N 带一致的 filePath → 照常判定（不可读则拦）",
+         "1000", "/preview/api/files/%s/page/2?filePath=%s" % (sec_fid, sec_path),
+         {}, "", "enforce", False, sec_path, False),
+
+        ("其它接口不受影响：/preview/view 不带路径 → 照旧放行",
+         "1000", "/preview/view", {}, "", "enforce", True, None, False),
+    ]
+
+    for desc, uid, uri, hdrs, ref, guard, want_allow, want_path, want_obs in fid_cases:
+        fid_state["v"] = guard
+        logs.clear()
+        h = FakeHandler(mod, FakeHeaders(hdrs))
+        allow, why, path = h._decide(uid, uri, ref)
+        got_obs = any("【观察】" in m for m in logs)
+        ok = (allow == want_allow) and (path == want_path) and (got_obs == want_obs)
+        mark = "OK " if ok else "FAIL"
+        if not ok:
+            failed += 1
+        print("  %s  %s" % (mark, desc))
+        print("        -> %s | path=%s | %s" % ("放行" if allow else "拦截", path, why))
+        if not ok:
+            print("        ❌ 期望 allow=%s path=%s 观察记录=%s（实际 %s）"
+                  % (want_allow, want_path, want_obs, got_obs))
+
+    print()
+    total = len(cases) + len(fid_cases)
     if failed == 0:
-        print("✅ 闸门判定矩阵全部通过（%d 条）" % len(cases))
+        print("✅ 闸门判定矩阵全部通过（%d 条）" % total)
     else:
-        print("❌ 有 %d 条判定不符" % failed)
+        print("❌ 有 %d 条判定不符（共 %d 条）" % (failed, total))
     return failed
 
 

@@ -26,3 +26,6 @@ fpk/tools/privacy-scan-report.txt.err
 # 这些是装到飞牛「应用数据目录 /vol{n}/@appdata/basemetas-fileview/fonts/」用的，
 # 属于本机资产，不是源码。
 fonts/
+
+# 删库重建前的 Release 资产备份（本地保留，不入库）
+_release-backup/
