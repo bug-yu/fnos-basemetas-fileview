@@ -144,15 +144,33 @@ def step_copy():
     if not os.path.isdir(DIST_DIR):
         print("  ✗ 没有 dist/ —— 上一步没成功？")
         sys.exit(1)
-    shutil.rmtree(TARGET, ignore_errors=True)
+
+    # ⚠️ 不要整目录删除再拷：
+    #    `shutil.rmtree(TARGET)`（或 shell 的 `rm -rf`）要删 130+ 个文件，
+    #    会触发**安全护栏的批量删除确认**（>50 文件），导致拷贝根本没执行 ✗
+    #    （0.5.56 打包时就这么被拦下来的）。改成：**覆盖同名文件**，
+    #    再**只删目标里多出来的**（通常只有几个带哈希的旧 chunk）。
     os.makedirs(TARGET, exist_ok=True)
-    for name in os.listdir(DIST_DIR):
-        src = os.path.join(DIST_DIR, name)
-        dst = os.path.join(TARGET, name)
-        if os.path.isdir(src):
-            shutil.copytree(src, dst)
-        else:
-            shutil.copy2(src, dst)
+    copied = 0
+    for dp, _dn, fn in os.walk(DIST_DIR):
+        rel = os.path.relpath(dp, DIST_DIR)
+        dst_dir = TARGET if rel == "." else os.path.join(TARGET, rel)
+        os.makedirs(dst_dir, exist_ok=True)
+        for f in fn:
+            shutil.copy2(os.path.join(dp, f), os.path.join(dst_dir, f))
+            copied += 1
+    print("  覆盖/新增 %d 个文件" % copied)
+
+    stale = []
+    for dp, _dn, fn in os.walk(TARGET):
+        rel = os.path.relpath(dp, TARGET)
+        src_dir = DIST_DIR if rel == "." else os.path.join(DIST_DIR, rel)
+        for f in fn:
+            if not os.path.exists(os.path.join(src_dir, f)):
+                stale.append(os.path.join(dp, f))
+    for p in stale:
+        os.remove(p)
+    print("  清掉多余的 %d 个" % len(stale))
 
     total = 0
     for dp, _dn, fn in os.walk(TARGET):

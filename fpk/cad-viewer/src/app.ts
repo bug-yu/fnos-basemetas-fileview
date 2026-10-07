@@ -402,9 +402,8 @@ export class CadViewerApp {
       this.initUseMainThreadDraw = useMainThreadDraw
       this.initDisableExport = disableExport
 
-      // ★ 本应用专用入口：飞牛在「用 FileView 打开」时会把文件绝对路径追加成
-      //   ?path=<绝对路径>，所以这里直接自动加载 —— 不用示例那套上传界面。
-      void this.autoLoadFromQuery()
+      // ⚠️ 自动加载**不在这里** —— 本函数是懒调用的（只在选完文件后才跑）。
+      //    见 bootCadViewerApp() 里的 app.autoLoadFromQuery()。
 
       return true
     } catch (error) {
@@ -681,33 +680,56 @@ export class CadViewerApp {
    * 由闸门按**逐用户 ACL** 判定，读不到就 403，与 FileView 本身的权限口径一致。
    * 也就是说：这里**不能**绕开权限，否则等于给整个应用开了后门。
    */
-  private async autoLoadFromQuery(): Promise<void> {
+  async autoLoadFromQuery(): Promise<void> {
     const q = new URLSearchParams(location.search)
-    const path = q.get('path') || q.get('filePath')
+    // 飞牛官方文档说会追加 `path`；这里再兜几个常见写法，免得因为参数名不一致白排查
+    let path = q.get('path') || q.get('filePath') || q.get('file') || ''
     if (!path) {
-      // 没有参数就保留示例的上传界面，方便手工验证
+      // 没拿到路径：**把实际收到的参数显示出来** —— 否则只能干瞪眼。
+      // （0.5.55 首版就是因为钩子挂错地方、又看不到参数，才白跑一轮 ✗）
+      const raw = location.search || '（无查询参数）'
+      // eslint-disable-next-line no-console
+      console.warn('[fv-cad] 没有收到文件路径，实际查询串：', raw)
+      this.showMessage(`没有收到文件路径，URL 参数：${raw}`, 'error')
       return
     }
+    if (path.startsWith('file://')) {
+      path = decodeURIComponent(path.slice('file://'.length))
+    }
     const name = path.split('/').pop() || 'drawing.dwg'
-    try {
-      this.showMessage(`正在读取 ${name} …`, 'info')
-      const res = await fetch(`./api/raw?filePath=${encodeURIComponent(path)}`, {
-        credentials: 'same-origin'
-      })
-      if (!res.ok) {
-        this.showMessage(
-          res.status === 403
-            ? '没有权限读取这个文件'
-            : `读取文件失败（HTTP ${res.status}）`,
-          'error'
-        )
+    // ⚠️ 页面刚打开时 CAD worker 可能**还没就绪** —— 直接开有几率报
+    //    "CAD worker scripts are not reachable"（示例原本是等用户选文件，天然错开了）。
+    //    所以这里退避重试几次；用 this.hasOpenedFile 判断成没成
+    //    （它在 documentActivated 事件里置位）。
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      try {
+        this.showMessage(`正在读取 ${name} …`, 'info')
+        const res = await fetch(`./api/raw?filePath=${encodeURIComponent(path)}`, {
+          credentials: 'same-origin'
+        })
+        if (!res.ok) {
+          this.showMessage(
+            res.status === 403
+              ? '没有权限读取这个文件'
+              : `读取文件失败（HTTP ${res.status}）`,
+            'error'
+          )
+          return
+        }
+        const buf = await res.arrayBuffer()
+        await this.loadFile(new File([buf], name))
+      } catch (error) {
+        this.showMessage(`读取文件出错：${error}`, 'error')
         return
       }
-      const buf = await res.arrayBuffer()
-      await this.loadFile(new File([buf], name))
-    } catch (error) {
-      this.showMessage(`读取文件出错：${error}`, 'error')
+      if (this.hasOpenedFile) return          // 成功
+      if (attempt < 4) {
+        // eslint-disable-next-line no-console
+        console.warn('[fv-cad] 第 %d 次没打开，%dms 后重试', attempt, 400 * attempt)
+        await new Promise(r => setTimeout(r, 400 * attempt))
+      }
     }
+    this.showMessage('加载超时：可直接把图纸拖到下面的框里打开', 'error')
   }
 
   /**
@@ -791,7 +813,12 @@ export class CadViewerApp {
  */
 export function bootCadViewerApp(options: CadViewerAppOptions = {}): void {
   const start = () => {
-    new CadViewerApp(options)
+    const app = new CadViewerApp(options)
+    // ★ 本应用专用：**页面一打开**就按 ?path= 自动加载。
+    //   ⚠️ 不能挂在 initialize() 里 —— 示例是「懒初始化」，
+    //      initialize() 只在用户选完文件后才被调用（loadFile 里），
+    //      挂在那边等于永远不触发（0.5.55 首版就是这么错的 ✗）。
+    void app.autoLoadFromQuery()
   }
 
   if (document.readyState === 'loading') {
