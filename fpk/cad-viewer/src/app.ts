@@ -708,10 +708,19 @@ export class CadViewerApp {
           credentials: 'same-origin'
         })
         if (!res.ok) {
+          // 把服务端返回的原因也带上 —— 否则界面上只有个状态码，没法定位
+          // （0.5.56 真机就是只看到「HTTP 400」，还得回来翻代码才知道是路径没解码 ✗）
+          let detail = ''
+          try {
+            detail = (await res.text()).trim().slice(0, 200)
+          } catch {
+            /* 拿不到就算了 */
+          }
+          const tail = detail ? `：${detail}` : ''
           this.showMessage(
             res.status === 403
-              ? '没有权限读取这个文件'
-              : `读取文件失败（HTTP ${res.status}）`,
+              ? `没有权限读取这个文件${tail}`
+              : `读取文件失败（HTTP ${res.status}）${tail}`,
             'error'
           )
           return

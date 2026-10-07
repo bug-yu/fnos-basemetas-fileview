@@ -628,11 +628,26 @@ class Handler(BaseHTTPRequestHandler):
     #    与闸门其它地方的 fail-open 有意不同：这是新增的"交出字节"能力，宁可拒绝。
     def _raw(self):
         uid = (self.headers.get("X-Acl-Uid") or "").strip()
-        path = (self.headers.get("X-Acl-File") or "").strip()
+        raw = (self.headers.get("X-Acl-File") or "").strip()
+        # ⚠️ nginx 的 `$arg_xxx` 是**未解码**的原始值 —— 页面发的是
+        #    `?filePath=%2Fvol1%2F...`，这里收到的就是 `%2Fvol1...` ✗
+        #    （0.5.56 真机就是卡在这：路径不以 /vol 开头 → 400）
+        #    所以必须**解码一次**。只解一次是安全的：解完立刻走下面的严格校验
+        #    （前缀 / 拒绝 .. / realpath 后仍须在 /vol 下），双重编码绕不过去。
+        path = urllib.parse.unquote(raw) if raw else ""
         real = safe_real_file(path)
         if real is None:
-            log("raw 拒绝：路径不合法 uid=%s path=%s" % (uid or "-", path or "-"))
-            return self._plain(400, "bad path")
+            why = "empty"
+            if not path:
+                why = "no X-Acl-File"
+            elif not path.startswith("/vol"):
+                why = "not under /vol"
+            elif ".." in path.split("/"):
+                why = "contains .."
+            elif not os.path.isfile(os.path.realpath(path)):
+                why = "not an existing regular file (in this container's view)"
+            log("raw 拒绝：%s | uid=%s raw=%r decoded=%r" % (why, uid or "-", raw[:120], path[:120]))
+            return self._plain(400, "bad path: %s | %s" % (why, path[:200]))
         if not uid.isdigit():
             log("raw 拒绝：拿不到身份 path=%s" % real)
             return self._plain(403, "no identity")

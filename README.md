@@ -857,6 +857,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.57** | 修 **CAD 页取文件报 HTTP 400** —— nginx 的 `$arg_filePath` 是**未解码**的原始值（页面发 `%2Fvol1%2F...`，闸门收到就是 `%2Fvol1...` → 不以 `/vol` 开头 ✗）→ 闸门里**解码一次**（双重编码绕不过去，已加测试）+ 把失败原因显示到界面 |
 | **0.5.56** | 修 **0.5.55 打开 CAD 文件时没自动加载**（钩子挂在懒初始化的  里，页面打开时永不触发）→ 挪到 （DOM 就绪即触发）+ 退避重试（worker 竞态）+ 没收到  时显示 URL 参数 |
 | **0.5.55** | **DWG/DXF 改用独立的 CAD 预览页**（开源 `mlightcad/cad-viewer`）—— 引擎自带的 cad2x 对**多重引线**、**面域边框**、**字体**还原都不行（真机对比）；新页面用 **LibreDWG** 解析 + **86 个 SHX 字体**，三项都正常。`dwg`/`dxf` 从 FileView 摘出，改由「用 CAD 预览打开」承接。**字体/模板打进包内、不依赖公网 CDN** ✓。新增 `/cad/api/raw` 读原文件，**由闸门自己判 ACL 且 fail-closed** ✓ |
 | **0.5.54** | ① 入口设置里「访问端口 / 访问路径 / 自定义 URL」三行**不再显示**（用官文未记载的 `portPerm`/`pathPerm`/`fullUrlPerm` = `hidden`；「桌面访问」保持可选）② **压缩包内单个文件的大小上限可以设置了** —— 引擎有第二道独立闸门 `fileview.archive.max-file-size`（默认 100 MB），此前写死、现在向导可调（单位字节，脚本按 MB 换算）。③ 顺带修 `app/ui/config` 被打成 CRLF |

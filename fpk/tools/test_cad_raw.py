@@ -54,6 +54,22 @@ check("前缀相似但非 /vol", gate.safe_real_file("/volume/x.dwg"), None)
 check("windows 风格", gate.safe_real_file("C:/vol1/a.dwg"), None)
 
 print()
+print("== nginx 传进来的是**未解码**的 $arg_filePath，闸门要解一次 ==")
+# 0.5.56 真机就是卡在这：页面发 ?filePath=%2Fvol1%2F...，nginx 的 $arg_xxx 不解码，
+# 闸门收到 %2Fvol1... → 不以 /vol 开头 → 400 ✗
+import urllib.parse  # noqa: E402
+
+check("编码值解码后应放行",
+      gate.safe_real_file(urllib.parse.unquote("%2Fvol1%2F1000%2Fa.dwg")),
+      "/vol1/1000/a.dwg")
+check("未编码的直接放行",
+      gate.safe_real_file(urllib.parse.unquote("/vol1/1000/a.dwg")),
+      "/vol1/1000/a.dwg")
+# 双重编码：只解一次 → 仍是 %2F... → 不以 /vol 开头 → 拒绝（不会因为多解一层而绕过）
+check("双重编码不能绕过（只解一次）",
+      gate.safe_real_file(urllib.parse.unquote("%252Fvol1%252Fa.dwg")), None)
+
+print()
 print("== 符号链接绕过：realpath 后不在 /vol 下 → 必须拒绝 ==")
 gate.os.path.realpath = lambda p: "/etc/passwd" if p == "/vol1/link" else p
 check("软链指向 /etc/passwd", gate.safe_real_file("/vol1/link"), None)
