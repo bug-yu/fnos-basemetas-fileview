@@ -141,14 +141,19 @@ def main() -> int:
 
         stripped = text.strip()
         head = stripped.split()[0] if stripped.split() else ""
-        in_map = stack and stack[-1] == "map"
+        # map / types 块体里都不是「指令名 参数;」的形式：
+        #   map 里是「键 值;」，types 里是「MIME类型 扩展名;」
+        # 所以这两类块体内要跳过"指令名白名单"检查。
+        # ⚠️ 0.5.55 给 CAD 页加了 types 块之后，里面的 application/wasm 等被误报成
+        #    "可疑指令名"，3 处误报让整个自检失败 ✗（其实 nginx 写法完全合法）。
+        in_data_block = bool(stack) and stack[-1] in ("map", "types")
 
         # 语句结尾
         if not stripped.endswith((";", "{", "}")):
             problems.append(f"L{lineno}: 语句未以 ; {{ }} 结尾（可能漏分号）-> {stripped[:80]}")
 
-        # 指令名白名单（map 块体内跳过：那里是「键 值;」）
-        if not in_map and head not in ("", "}"):
+        # 指令名白名单
+        if not in_data_block and head not in ("", "}"):
             if not head.startswith(("~", '"', "'")) and head != "default":
                 if not any(head.startswith(p) for p in KNOWN_PREFIXES):
                     problems.append(f"L{lineno}: 可疑指令名 '{head}'（不在白名单，确认拼写）")
