@@ -123,14 +123,22 @@ def step_normalize_lf():
                 if b"\r\n" in data:
                     with open(p, "wb") as fh:
                         fh.write(data.replace(b"\r\n", b"\n"))
-                    # ⚠️ 写回后**再读一次**确认真的干净了 —— Windows 上偶发半截写，
-                    #    只报"已处理"而文件其实没变（0.5.55 就遇到过：报修了 7 个，
-                    #    其中 2 个仍是 CRLF ✗）。宁可这里多读一遍，也别让打包再挂一次。
+                    # ⚠️ 写回后**必须再读一次确认**，而且**确认不了就报错**。
+                    #    0.5.56/0.5.57 连着两次踩到：函数"报告已修复 7 个"，
+                    #    实际有 2 个文件仍是 CRLF ✗（打包时才炸，还看不出是这里）。
+                    #    根因未完全定位（疑似并发/缓存），所以这里改成
+                    #    **重试一次 + 仍不合格就抛错**，绝不静默放过。
+                    for _ in range(2):
+                        with open(p, "rb") as fh:
+                            if b"\r\n" not in fh.read():
+                                break
+                        with open(p, "wb") as fh2:
+                            fh2.write(data.replace(b"\r\n", b"\n"))
                     with open(p, "rb") as fh:
                         if b"\r\n" in fh.read():
-                            print("    ⚠️ %s 写回后仍含 CRLF，重试一次" % os.path.relpath(p, TARGET))
-                            with open(p, "wb") as fh2:
-                                fh2.write(data.replace(b"\r\n", b"\n"))
+                            print("  ✗ %s 归一失败：写回后仍含 CRLF" % os.path.relpath(p, TARGET))
+                            print("    （这会让打包的行尾检查失败；请重跑本脚本，或检查文件是否被占用）")
+                            sys.exit(1)
                     fixed.append(os.path.relpath(p, TARGET))
             except OSError:
                 continue
