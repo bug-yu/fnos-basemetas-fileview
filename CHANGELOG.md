@@ -8,86 +8,48 @@
 
 ---
 
-## 0.5.53
+## 0.5.54
 
-应用设置里「**桌面访问**」改为**可选** —— 管理员可以选「仅管理员」或「设备内所有用户」。
+### 一、入口设置更清爽：「访问端口 / 访问路径 / 自定义 URL」不再显示
 
-0.5.52 为了防误改把它设成了 `accessPerm: "readonly"`（灰的、不可点），
-现在按需求放开成 **`editable`**。
+这三行是框架为入口渲染的，而入口地址由**统一网关**决定、用户不该去改（改错了预览就打不开）。
 
-「访问端口 / 访问路径 / 自定义 URL」三行**仍然隐藏**不变
-（它们由 `portPerm` / `pathPerm` / `fullUrlPerm` 控制，与 `accessPerm` 相互独立）。
-
-```json
-"control": {
-  "accessPerm": "editable",   // 桌面访问可选（0.5.52 曾是 readonly）
-  "portPerm": "hidden",
-  "pathPerm": "hidden",
-  "fullUrlPerm": "hidden"
-}
-```
-
-## 0.5.52
-
-入口设置里那三行「**访问端口 / 访问路径 / 自定义 URL**」现在**彻底不显示了**。
-
-### 0.5.51 为什么不够
-
-0.5.51 用的是官文里唯一文档化的 `control.accessPerm = "readonly"` ——
-它只能做到「**不可编辑**」（真机确认：「桌面访问」的单选按钮变灰了），
-**做不到「不显示」**。
-
-### 真正的开关：三个**官方文档里没有**的字段
-
-对照一个**已发布的第三方应用**（`fygo-browser`，Chrome 浏览器）的 `ui/config` 发现：
+隐藏它们的开关是三个**官方文档里没有记载**的字段（对照一个已发布的第三方应用
+`fygo-browser` 的 `ui/config` 得来）：
 
 ```json
 "control": {
-  "accessPerm": "readonly",
-  "portPerm":    "hidden",     // 隐藏「访问端口」
-  "pathPerm":    "hidden",     // 隐藏「访问路径」
-  "fullUrlPerm": "hidden"      // 隐藏「自定义 URL」
+  "accessPerm": "editable",   // 「桌面访问」保持可选（可选「仅管理员」/「设备内所有用户」）
+  "portPerm":    "hidden",    // 隐藏「访问端口」
+  "pathPerm":    "hidden",    // 隐藏「访问路径」
+  "fullUrlPerm": "hidden"     // 隐藏「自定义 URL」
 }
 ```
 
-**`portPerm` / `pathPerm` / `fullUrlPerm` 三个字段官方文档完全没有记载**，
-但实际生效 —— 加上之后那三行就不显示了。
+> ⚠️ 不能用 `accessPerm: "hidden"` —— 那会把**整个入口**一起隐藏（实测过）；
+> 而 `accessPerm` 单独设成 `readonly` 只能做到"不可编辑"、做不到"不显示"。
 
-> ⚠️ 仍然**不能**用 `accessPerm: "hidden"` —— 那会把**整个入口**一起隐藏（实测过）。
+### 二、压缩包内单个文件的大小上限**可以设置了**
 
-### 做法
+引擎其实有**两道独立**的体积闸门，此前只放开了第一道：
 
-- 在生成器 `fpk/tools/gen_filetypes.py` 里给入口补上这三个 `hidden`
-  （`app/ui/config` 是生成物，只改生成物会被下次生成覆盖）
-- 保留 `accessPerm = "readonly"` —— 「桌面访问」会变灰，**防止误改**
+| 闸门 | 引擎配置键 | 默认 | 现象 |
+|---|---|---|---|
+| 单文件预览上限 | `fileview.preview.storage.max-file-size-mb` | 100 MB | 超过就 413，前端显示「文件转换失败」 |
+| **压缩包内单个文件** | `fileview.archive.max-file-size` | 100 MB | 解压时包内**单个文件**超过就跳过 |
 
-> **方法论**：官方文档只记录公开字段，"官文没写" ≠ "做不到"。
-> 遇到这类问题，**最省事的办法是找一个"已经做到"的同类应用，把它的配置文件 dump 出来对比**
-> —— 这比反复试参数快得多。
+第二道以前写死在引擎默认值上 —— 「**压缩包能打开、但里面某个大文件点不开**」撞的就是它。
+现在安装向导 / 应用「设置」里多了「**压缩包内单个文件上限（MB）**」，默认 100、上限 10240。
 
-## 0.5.51
+> ⚠️ 这个键的**单位是字节**（不是 MB）：向导按 MB 填，脚本换算后写入环境变量
+> `FILEVIEW_ARCHIVE_MAXFILESIZE`。
+> （依据：引擎开源，`ArchiveExtractService` 里
+> `@Value("${fileview.archive.max-file-size:104857600}") private long maxFileSize;`）
 
-应用设置「**常规**」里，入口的「访问端口 / 访问路径 / 自定义 URL」三项改为**只读**。
+### 三、顺带修的一个打包问题
 
-### 背景
-
-这三行是**框架为入口固定渲染**的 —— 官方文档里**没有它们的记载**。
-而本应用的入口地址由**统一网关**（`gatewayPrefix` / `gatewaySocket`）决定，
-用户**不应该**去改它：改错了预览就打不开。
-
-官方文档里唯一文档化的可见性控制是入口的 `control.accessPerm`：
-
-| 取值 | 含义 |
-|---|---|
-| `editable` | 用户可以编辑（默认） |
-| `readonly` | 用户可以查看但不能编辑 |
-| `hidden` | 隐藏该设置 |
-
-⚠️ **不要用 `hidden`** —— 实测它会把**整个入口**一起隐藏（入口对普通用户不可见）。
-所以本版用 **`readonly`**：把可编辑的地址字段收起来，避免误改。
-
-> 改的是**生成器** `fpk/tools/gen_filetypes.py`（`app/ui/config` 是它生成的 ——
-> 只改生成物会被下次生成覆盖）。
+`gen_filetypes.py` 在 Windows 上会把 `app/ui/config` 写成 **CRLF**，而打包用的是**工作区**
+（`.gitattributes` 的 `eol=lf` 只管仓库）→ CRLF 会被打进 `.fpk`。已改为写 LF。
 
 ## 0.5.50
 

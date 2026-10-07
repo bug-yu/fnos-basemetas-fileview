@@ -51,6 +51,13 @@ services:
       # ## MAXSIZE_BEGIN
       - FILEVIEW_PREVIEW_STORAGE_MAXFILESIZEMB=1024
       # ## MAXSIZE_END
+      #
+      # 压缩包内**单个文件**的解压上限（引擎 fileview.archive.max-file-size）。
+      # ⚠️ 这个键的**单位是字节**（默认 104857600 = 100 MB），和上面那个 MB 不同 ——
+      #    脚本按向导里填的 MB 换算后写入。
+      # ## ARCHIVEMAX_BEGIN
+      - FILEVIEW_ARCHIVE_MAXFILESIZE=104857600
+      # ## ARCHIVEMAX_END
 
   # 统一网关适配层：监听 Unix Socket，转发给 FileView
   gateway:

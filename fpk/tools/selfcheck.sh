@@ -432,6 +432,45 @@ done
 wizard_max_file_mb=""
 fv_sync_volumes "" >/dev/null
 
+echo
+echo "== 压缩包内单个文件上限（ARCHIVEMAX 标记块）验证 =="
+# 引擎另有一道独立闸门 fileview.archive.max-file-size（**单位字节**，默认 100MB）。
+# 依据：fileview-backend 的 ArchiveExtractService 里
+#   @Value("${fileview.archive.max-file-size:104857600}") private long maxFileSize;
+wizard_archive_max_file_mb=""
+echo "  模板默认值 -> [$(fv_compose_archivemax)]   期望 [104857600]（= 100 MB，引擎默认）"
+[ "$(fv_compose_archivemax)" = "104857600" ] || { echo "   ❌ 模板默认值不对"; FAILED=1; }
+
+echo "-- 向导填 300（MB）保存（应换算成字节）--"
+wizard_archive_max_file_mb=300
+fv_sync_volumes "/vol1,/vol3" >/dev/null
+sed -n '/## ARCHIVEMAX_BEGIN/,/## ARCHIVEMAX_END/p' "$TRIM_APPDEST/docker/docker-compose.yaml" | sed 's/^/   /'
+[ "$(fv_compose_archivemax)" = "314572800" ] \
+  && echo "   ✅ 300 MB → 314572800 字节" \
+  || { echo "   ❌ 换算不对，得到 [$(fv_compose_archivemax)]"; FAILED=1; }
+[ "$(fv_load_archivemax_state)" = "300" ] || { echo "   ❌ 上限未持久化"; FAILED=1; }
+
+echo "-- 模拟升级（compose 被模板覆盖）+ 升级回调（拿不到向导变量）--"
+wizard_archive_max_file_mb=""
+cp "$BASE/app/docker/docker-compose.yaml" "$TRIM_APPDEST/docker/docker-compose.yaml"
+fv_sync_volumes "" >/dev/null
+[ "$(fv_compose_archivemax)" = "314572800" ] \
+  && echo "   ✅ 升级后已按持久化设置恢复" \
+  || { echo "   ❌ 升级后被覆盖成 [$(fv_compose_archivemax)]"; FAILED=1; }
+
+echo "-- 非法输入绝不能写出非数字（引擎侧是 long，写坏会让容器起不来）--"
+for bad in abc "" 0 "1e3" "-5" "999999"; do
+  wizard_archive_max_file_mb="$bad"
+  fv_sync_volumes "" >/dev/null
+  got="$(fv_compose_archivemax)"
+  case "$got" in
+    ''|*[!0-9]*) echo "   ❌ 输入 [$bad] 写出了非数字 [$got]"; FAILED=1 ;;
+    *) echo "   输入 [${bad:-空}] -> [$got]  OK" ;;
+  esac
+done
+wizard_archive_max_file_mb=""
+fv_sync_volumes "" >/dev/null
+
 echo "-- 同步日志 --"
 sed 's/^/   /' "$TRIM_PKGVAR/fv-volumes.log" 2>/dev/null
 

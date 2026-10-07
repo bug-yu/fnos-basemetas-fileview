@@ -261,6 +261,75 @@ fv_container_maxsize() {
 }
 
 # ---------------------------------------------------------------------------
+# 2c. 压缩包内单个文件的解压上限（FILEVIEW_ARCHIVE_MAXFILESIZE）
+# ---------------------------------------------------------------------------
+# 引擎还有**另一道独立**的闸门：解压压缩包时，包内**单个文件**超过
+# fileview.archive.max-file-size 就被跳过（默认 104857600 字节 = 100 MB）。
+# 它和上面的「单文件预览上限」互不影响 —— 「压缩包能打开、但里面某个大文件点不开」
+# 撞到的就是这一道。
+#
+# 依据（引擎开源，读了源码）：fileview-preview 的 ArchiveExtractService 里
+#   @Value("${fileview.archive.max-file-size:104857600}") private long maxFileSize;
+# ⚠️ **单位是字节**（不是 MB）：向导里按 MB 填，这里换算后写进 compose。
+#    引擎侧是 long，写非数字同样会让容器起不来 —— 所以也只接受纯数字。
+FV_ARCHIVE_DEFAULT=100         # MB，等于引擎默认值（不填就不改变现状）
+FV_ARCHIVE_MAX=10240           # 10 GB，防手滑的上限
+FV_ARCHIVE_STATE="${TRIM_PKGVAR:-}/archivemaxsize.conf"
+
+# 复用上面那套「纯数字规范化」，再按归档场景的上限收一道
+fv_normalize_archivemax() {
+  local n
+  n="$(fv_normalize_maxsize "${1:-}")"
+  [ -n "$n" ] || { echo ""; return 0; }
+  [ "$n" -le "$FV_ARCHIVE_MAX" ] || n="$FV_ARCHIVE_MAX"
+  echo "$n"
+}
+fv_save_archivemax_state() {
+  [ -n "${TRIM_PKGVAR:-}" ] || return 0
+  mkdir -p "$TRIM_PKGVAR" 2>/dev/null
+  printf '%s\n' "$1" > "$FV_ARCHIVE_STATE" 2>/dev/null
+  return 0
+}
+fv_load_archivemax_state() {
+  [ -n "${TRIM_PKGVAR:-}" ] && [ -r "$FV_ARCHIVE_STATE" ] || { echo ""; return 0; }
+  sed -n '1{s/[^0-9]//g;p;}' "$FV_ARCHIVE_STATE" 2>/dev/null | head -n 1
+}
+# 把 MB 换算成字节，写进 compose 的 ARCHIVEMAX 段
+fv_write_archivemax() {
+  local mb="$1" bytes tmp
+  [ -n "$mb" ] || return 1
+  [ -f "$FV_COMPOSE" ] || return 1
+  if ! grep -q '## ARCHIVEMAX_BEGIN' "$FV_COMPOSE" 2>/dev/null; then
+    fv_log "警告：compose 里找不到 ARCHIVEMAX_BEGIN 标记，压缩包内文件上限未写入"
+    return 1
+  fi
+  bytes=$(( mb * 1048576 ))
+  tmp="${FV_COMPOSE}.ams"
+  if awk -v n="$bytes" '
+    /## ARCHIVEMAX_BEGIN/ { print; printf "      - FILEVIEW_ARCHIVE_MAXFILESIZE=%s\n", n; skip=1; next }
+    /## ARCHIVEMAX_END/   { skip=0 }
+    skip != 1 { print }
+  ' "$FV_COMPOSE" > "$tmp" 2>/dev/null && [ -s "$tmp" ]; then
+    if cmp -s "$tmp" "$FV_COMPOSE" 2>/dev/null; then
+      rm -f "$tmp" 2>/dev/null
+      return 0
+    fi
+    mv "$tmp" "$FV_COMPOSE"
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null
+  return 1
+}
+fv_compose_archivemax() {
+  sed -n 's/.*FILEVIEW_ARCHIVE_MAXFILESIZE=\([0-9]\{1,\}\).*/\1/p' "$FV_COMPOSE" 2>/dev/null | head -n 1
+}
+fv_container_archivemax() {
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' \
+    basemetas-fileview-engine 2>/dev/null \
+    | sed -n 's/^FILEVIEW_ARCHIVE_MAXFILESIZE=\([0-9]\{1,\}\)$/\1/p' | head -n 1
+}
+
+# ---------------------------------------------------------------------------
 # 3. 写 .env —— 让命令行里手动 docker compose 也能正常工作
 # ---------------------------------------------------------------------------
 # 手工执行时 TRIM_APPDEST / TRIM_PKGVAR 为空，compose 会把 ":/app/target:rw"
@@ -401,6 +470,15 @@ fv_sync_volumes() {
   fv_save_maxsize_state "$ms"
   if fv_write_maxsize "$ms"; then
     fv_log "单文件大小上限已同步：${ms} MB"
+  fi
+  # 压缩包内**单个文件**的解压上限：逻辑同上（向导值 → 上次保存的 → 默认值）
+  am="$(fv_normalize_archivemax "${wizard_archive_max_file_mb:-}")"
+  [ -n "$am" ] || am="$(fv_load_archivemax_state)"
+  am="$(fv_normalize_archivemax "$am")"
+  [ -n "$am" ] || am="$FV_ARCHIVE_DEFAULT"
+  fv_save_archivemax_state "$am"
+  if fv_write_archivemax "$am"; then
+    fv_log "压缩包内文件上限已同步：${am} MB"
   fi
   # 闸门开关：向导里填了就用向导值，没填就保持现值
   fv_write_acl_conf "${wizard_acl_gate:-}"
