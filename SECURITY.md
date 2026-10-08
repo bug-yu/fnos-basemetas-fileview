@@ -383,15 +383,27 @@ CAD 预览页要读**原文件**，所以多了一个「把文件字节交出去
    docker buildx imagetools inspect library/nginx:alpine
    docker buildx imagetools inspect library/python:3-alpine
    ```
-5. **框架启停 docker 应用不调用 `cmd/main`（0.5.30 实测，待跟进）**：
+5. ✅ **框架启停 docker 应用不调用 `cmd/main`（0.5.30 实测）—— 说法已更正（2026-10-08）**：
    `appcenter-cli stop` + `start`（提示 `Launching complete`）之后，
    `${TRIM_PKGVAR}/fv-volumes.log` **一条新记录都没有** —— 而 `cmd/main start` 一旦被调用
    必然写日志（无条件 `fv_sync_volumes "" ensure` + 跑预检）。所以它没被执行。
    **影响**：`cmd/main start` 里的「安装完整性预检 / 升级后自愈 / 开放 API 预检」
    在应用启停时不会跑。自愈能力没丢（`upgrade_callback` / `config_callback` 里有同样的同步逻辑），
-   但"启动时"这个时机确实没覆盖 —— 而 `cmd/config_callback` 的注释一直假设它会被调用，
-   **这个假设需要更正**。待办：把注释与 README 的说法改过来，并考虑把启动自愈挪到一个
-   框架确实会调用的时机（或接受只在升级/保存设置时自愈）。
+   但"启动时"这个时机确实没覆盖 —— 而 `cmd/config_callback` 的注释一直假设它会被调用。
+
+   **已做（2026-10-08）**：把「假设它会被调用」的说法全部改过来 ——
+   - `cmd/main` 文件头：写明框架启停不调用本脚本，只有 `status` 会被轮询；
+     start 分支里的「框架紧接着就用这份 compose 起容器」那句（错的）已删除，
+     并注明自愈的真正落点是 `upgrade_callback` / `config_callback`；
+   - `cmd/config_callback`：注明「保存设置」是预检**唯一**会自动执行的时机，
+     并显式标出旧说法（「cmd/main start 只在停止→启动时被调用」）是已被否定的猜测；
+   - `app/docker/fv-acl-probe.sh` 文件头：调用来源改为 `config_callback` + `cmd/main start`；
+   - `README.md`：「升级会顶掉挂载段」一节与「诊断」一节同步更正
+     （预检结果不是"启动时"写的，而是保存设置 / 升级时写的）。
+
+   **仍未做（可选项）**：把「启动时自愈」挪到一个框架确实会调用的时机。
+   现状是**接受**「只在升级 / 保存设置时自愈」—— 因为这两条路径已经覆盖了所有会改写
+   compose 的场景（安装、升级、保存设置），启动时并不需要再同步一次。
 6. ✅ **框架日志里的两类启停报错 —— 用户判断为正常现象，关闭**（2026-10-07）：
    `/var/log/apps/basemetas-fileview.log` 里会出现
    `failed to set up container networking: network … not found` 与

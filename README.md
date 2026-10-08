@@ -280,7 +280,10 @@ FileView 需以**同名同路径**只读挂载存储卷（`/vol1:/vol1:ro`），
 
 > 注意：bind 挂载在容器创建时确定，只改配置不重建容器是**不会**生效的（`docker restart` 也不行）。这就是 0.5.6 之前「设置里明明有 `/vol3`，预览还是报文件不存在」的原因。
 
-> ⚠️ **升级会顶掉挂载段**：升级时框架把新的 `app.tgz` 重新释放到 `${TRIM_APPDEST}`，`docker/docker-compose.yaml` 会被覆盖回安装包模板里写死的 `/vol1`、`/vol2`。所以任何「释放文件」之后的时机都必须重写一遍挂载段 —— 0.5.8 起 `cmd/upgrade_callback` 与 `cmd/main start` 都会做这件事（**升级后不必再去设置里保存一次**）。
+> ⚠️ **升级会顶掉挂载段**：升级时框架把新的 `app.tgz` 重新释放到 `${TRIM_APPDEST}`，`docker/docker-compose.yaml` 会被覆盖回安装包模板里写死的 `/vol1`、`/vol2`。所以任何「释放文件」之后的时机都必须重写一遍挂载段 —— 承担这件事的是 `cmd/upgrade_callback`（**升级后不必再去设置里保存一次**）。
+>
+> 📌 **`cmd/main start` 里也有同样的同步逻辑，但它其实跑不到**：实测（0.5.30）**框架启停应用时不调用 `cmd/main`**，而是自己走 compose —— `appcenter-cli stop` + `start` 之后 `${TRIM_PKGVAR}/fv-volumes.log` **一条新记录都没有**（而那段逻辑一旦执行必然写日志）。框架真正会调用的只有 `status`（会被轮询）。
+> 所以「启动时自愈 / 启动时预检」这个时机**目前没有覆盖**；自愈实际发生在**升级**与**保存设置**两个时机。详见 [SECURITY.md](SECURITY.md) §4 待办 5。
 
 向导里填的值会持久化到 `${TRIM_PKGVAR}/volumes.conf`，升级/重启时按「本次向导值 → 上次保存的设置 → `auto`」的顺序取值；同步结果记在 `${TRIM_PKGVAR}/fv-volumes.log`。
 
@@ -748,6 +751,13 @@ mode=enforce   →   mode=log      # 退回「只记录不拦截」
 >
 > 保留 `api-scope` 声明的理由见下面第二层：它让预检能在 token 到位时**真正跑通** ③④，
 > 而不是在 scope 层就被 403 掉 —— 一旦飞牛在后续版本里补上 token 注入，不需要再改包。
+>
+> ⚠️ **还有一个"数据缺口"要说明**：官方点名 token 是在**启动 `cmd/main`** 时注入的，
+> 而实测（0.5.30）**框架启停应用根本不调用 `cmd/main`**（见上面「升级会顶掉挂载段」那节），
+> 所以这个注入时机在本机**从未被执行过** —— 「`cmd/main` 里到底有没有 token」目前仍无数据。
+> 也就是说：上面这条结论只覆盖「预检脚本实际跑到的时机（保存设置 / 升级）」，
+> 不覆盖官方文档点名的那个时机。若要把这个缺口补上，在 `cmd/main` 里加一行
+> token 存在性日志即可（`status` 会被框架轮询）。
 
 **第二层（0.5.25 引入、0.5.30 修复的一个回归）：`api-scope` 被误删了。**
 
@@ -801,8 +811,10 @@ docker exec basemetas-fileview-acl python3 /acl/fv-acl-gate.py --test 1001 /vol1
 ```
 
 网关 `access_log` 里也加了 `uid=` / `isadmin=` 两列，日常请求就能看出身份有没有传进来。
-`@appdata/basemetas-fileview/fv-volumes.log` 里还留着启动时的开放 API 预检结果
-（token / socket / 已授权目录），将来若要改走官方路线可以拿它当参考。
+`@appdata/basemetas-fileview/fv-volumes.log` 里还留着最近一次开放 API 预检结果
+（token / socket / 已授权目录）。预检在**保存设置**与**升级**时执行 ——
+注意**不是**「应用启动时」：框架启停应用不调用 `cmd/main`（见上面「升级会顶掉挂载段」那节的说明）。
+将来若要改走官方路线，可以拿这份日志当参考。
 
 ## 重新打包
 

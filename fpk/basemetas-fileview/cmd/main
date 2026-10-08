@@ -1,10 +1,21 @@
 #!/bin/bash
 # 应用运行控制脚本
-# start / stop 的实际启停动作由框架按 config/resource 里的 docker-project 资源执行，
-# 这里主要做三件事：
-#   1. start 前做「安装完整性预检」
-#   2. start 前把存储卷挂载段同步一遍（升级/恢复后自愈的关键点）
-#   3. status 如实回报容器状态
+#
+# ★★ 实测事实（0.5.30，见 SECURITY.md §4 待办 5）：**框架启停 docker 应用时不调用本脚本**，
+#    而是自己按 config/resource 里的 docker-project 资源走 compose。
+#    证据：`appcenter-cli stop` + `start`（提示 Launching complete）之后，
+#    ${TRIM_PKGVAR}/fv-volumes.log **一条新记录都没有** —— 而本脚本的 start 分支一旦执行
+#    必然写日志（无条件同步挂载段 + 跑预检）。
+#
+#    ⇒ 下面 start 分支里的几件事，在「应用启停」这个时机**不会**发生，只在有人显式调用
+#      本脚本时才执行。框架真正会调用的只有 **status**（会被轮询）。
+#      「启动时自愈 / 启动时预检」这个时机目前是没有覆盖的：自愈实际发生在
+#      **升级**（cmd/upgrade_callback）与**保存设置**（cmd/config_callback）两个时机。
+#
+# 本脚本做什么：
+#   1. start  —— 安装完整性预检 + 同步存储卷挂载段 + 开放 API 预检（⚠️ 见上：框架启停走不到）
+#   2. stop   —— **故意什么都不做**（只记一行诊断），启停交给框架自己的 compose
+#   3. status —— 如实回报容器状态（这个是框架真的会调的）
 
 ENGINE="basemetas-fileview-engine"
 GATEWAY="basemetas-fileview-gateway"
@@ -44,8 +55,11 @@ case "$1" in
 
     # 同步存储卷挂载段（幂等；顺带补生成 docker/.env）。
     # 升级时框架会把新的 app.tgz 重新释放到 ${TRIM_APPDEST}，docker-compose.yaml 被覆盖回
-    # 模板里写死的挂载段，之前按设置写好的卷就此丢失。框架紧接着就用这份 compose 起容器，
-    # 所以这里是成本最低的自愈点 —— 写在这里，用户不必再去「设置」里保存一次。
+    # 模板里写死的挂载段，之前按设置写好的卷就此丢失。
+    # ⚠️ 这里**不是**升级自愈的落点 —— 框架启停不调用本脚本（见文件头），所以「框架起容器前
+    #    先跑到这一段」是不成立的。真正承担升级自愈的是 cmd/upgrade_callback（同样跑
+    #    fv_sync_volumes），保存设置时则由 cmd/config_callback 跑。
+    #    这一段留着，只是「有人显式调用 cmd/main start 时」的兜底，别当成启动时必然发生的事。
     if [ -r "${TRIM_APPDEST}/docker/fv-volumes.sh" ]; then
       . "${TRIM_APPDEST}/docker/fv-volumes.sh"
       fv_prepare_dirs
@@ -54,7 +68,8 @@ case "$1" in
 
     # 飞牛开放 API 预检（只读，不改任何东西）：确认「按用户校验文件权限」这条路能不能
     # 走通 —— 需要 token、API socket、已授权目录三件事。结果写进 ${TRIM_PKGVAR}/fv-volumes.log。
-    # 全程不阻塞启动：任何失败都只是写日志。详见 app/docker/fv-acl-probe.sh 头部注释。
+    # 全程不阻塞：任何失败都只是写日志。详见 app/docker/fv-acl-probe.sh 头部注释。
+    # ⚠️ 同 config_callback 里的那次调用：本分支框架走不到，所以**实际会跑到的只有「保存设置」**。
     if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
       . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
       fv_acl_probe "main start"

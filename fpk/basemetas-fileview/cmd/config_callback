@@ -16,8 +16,11 @@ fv_prepare_dirs
 fv_sync_volumes "${wizard_volumes:-}" ensure >/dev/null
 
 # 顺带跑一次开放 API 预检（只读，不阻塞、不报错）。
-# 挂在「保存设置」上是因为 cmd/main start 只在应用经历「停止 → 启动」时才被调用，
-# 而实际使用中应用很少停过，预检根本不会执行。
+# 挂在「保存设置」上，是因为**框架启停应用时不调用 cmd/main**（0.5.30 实测，见
+# cmd/main 文件头与 SECURITY.md §4 待办 5）—— 于是「保存设置」成了预检**唯一**会自动
+# 执行的时机。（cmd/main start 里也有同样的调用，但那个分支框架走不到。）
+# ⚠️ 别再写成「cmd/main start 只在停止→启动时才被调用，而应用很少停」——
+#    那是 0.5.30 之前的猜测，已被实测否定。
 if [ -r "${TRIM_APPDEST}/docker/fv-acl-probe.sh" ]; then
   . "${TRIM_APPDEST}/docker/fv-acl-probe.sh"
   fv_acl_probe "config_callback（保存设置）"

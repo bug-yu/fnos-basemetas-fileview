@@ -328,6 +328,77 @@ if grep -qE '^[[:space:]]*absolute_redirect[[:space:]]+off[[:space:]]*;' "$BASE/
 else
   echo "   ❌ nginx.conf 缺少 absolute_redirect off —— 302 会拼成无端口的绝对地址"; FAILED=1
 fi
+
+# ---- CAD 预览页（0.5.55 新增，本次才补进自检）----
+# 这一页有两个**方向相反**的 location，失败模式都很隐蔽，而加它的时候没进自检：
+#   ① /cad/         静态资源 → 必须 alias 供出，且**不挂** auth_request（页面本身不含用户数据）
+#   ② /cad/api/raw  读原文件 → **必须**过闸门（aclgate/raw），绝不能直连引擎
+CAD_STATIC="$(awk '/location \/app\/basemetas-fileview\/cad\/ \{/,/^    }/' "$NGX")"
+CAD_RAW="$(awk '/location = \/app\/basemetas-fileview\/cad\/api\/raw/,/^    }/' "$NGX")"
+
+if printf '%s' "$CAD_STATIC" | grep -qF 'alias /etc/nginx/conf.d/cad/;'; then
+  echo "   ✅ CAD 静态资源用 alias 供出（不代理引擎）"
+else
+  echo "   ❌ CAD 静态资源 location 缺少 alias /etc/nginx/conf.d/cad/"; FAILED=1
+fi
+# ⚠️ 本页最容易踩的部署坑：.wasm 必须返回 application/wasm —— 否则
+#    WebAssembly.instantiateStreaming 会拒绝加载，DWG 解析器直接起不来。
+if printf '%s' "$CAD_STATIC" | grep -qE 'application/wasm +wasm;'; then
+  echo "   ✅ CAD 静态资源已声明 application/wasm（WASM 解析器能加载）"
+else
+  echo "   ❌ CAD 静态资源 types 块缺少 'application/wasm wasm;'（WASM 会加载失败）"; FAILED=1
+fi
+# 页面外壳不含用户数据，本就不该挂 auth_request（挂上说明有人误改，且白白多一跳）
+if printf '%s' "$CAD_STATIC" | grep -qF 'auth_request'; then
+  echo "   ❌ CAD 静态资源不该挂 auth_request（它只是页面外壳，不含用户数据）"; FAILED=1
+else
+  echo "   ✅ CAD 静态资源未挂 auth_request（符合设计）"
+fi
+
+# ⚠️ /cad/api/raw 必须是 location =（精确匹配）：
+#    前缀 location /app/basemetas-fileview/ 会把它吞掉、只做 auth_request 判定，
+#    而 auth_request 是子请求（$arg_filePath 在子请求里不一定可用），闸门在
+#    「解析不到路径」时是 fail-open → 等于给整个应用开了个任意文件读取的后门。
+if [ -n "$CAD_RAW" ]; then
+  echo "   ✅ /cad/api/raw 用精确匹配（location =）"
+else
+  echo "   ❌ 缺少 location = /app/basemetas-fileview/cad/api/raw"; FAILED=1
+fi
+if printf '%s' "$CAD_RAW" | grep -qF 'proxy_pass http://aclgate/raw;'; then
+  echo "   ✅ /cad/api/raw 走闸门（aclgate/raw），不是直连引擎"
+else
+  echo "   ❌ /cad/api/raw 必须 proxy_pass 到 http://aclgate/raw（直连引擎 = 任意文件读取）"; FAILED=1
+fi
+if printf '%s' "$CAD_RAW" | grep -qF 'X-Acl-Uid' \
+   && printf '%s' "$CAD_RAW" | grep -qF 'X-Acl-File $arg_filePath'; then
+  echo "   ✅ /cad/api/raw 已把身份与路径交给闸门（X-Acl-Uid / X-Acl-File）"
+else
+  echo "   ❌ /cad/api/raw 缺 X-Acl-Uid 或 X-Acl-File（闸门拿不到身份/路径）"; FAILED=1
+fi
+
+# 闸门侧：/raw 必须**自己**判 ACL，且判定不了就拒绝（fail-closed —— 与闸门其它
+# 地方的 fail-open 有意不同：这是新增的「把文件字节交出去」能力，宁可拒绝）
+if grep -qF 'def _raw(self):' "$GATE"; then
+  echo "   ✅ 闸门有 /raw 处理（CAD 页读原文件）"
+else
+  echo "   ❌ 闸门缺少 _raw 处理"; FAILED=1
+fi
+if grep -qF 'urllib.parse.unquote(raw)' "$GATE"; then
+  echo "   ✅ 闸门对 /raw 的路径解码一次（nginx 的 \$arg_* 是未解码的原始值）"
+else
+  echo "   ❌ 闸门 /raw 未解码路径（0.5.57 修的 HTTP 400 会复现）"; FAILED=1
+fi
+if grep -qF 'elif self.path.startswith("/raw")' "$GATE"; then
+  echo "   ✅ 闸门 do_GET 已路由 /raw"
+else
+  echo "   ❌ 闸门 do_GET 未路由 /raw"; FAILED=1
+fi
+if grep -qF 'return self._plain(403, "no identity")' "$GATE"; then
+  echo "   ✅ /raw 拿不到身份时拒绝（fail-closed）"
+else
+  echo "   ❌ /raw 未做「拿不到身份就拒绝」—— fail-closed 是这一页的关键"; FAILED=1
+fi
+
 # 闸门判定矩阵单测
 if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
   PY="$(command -v python3 || command -v python)"
@@ -338,6 +409,17 @@ if command -v python >/dev/null 2>&1 || command -v python3 >/dev/null 2>&1; then
   fi
 else
   echo "   ⚠️  本机没有 python，跳过闸门判定矩阵单测"
+fi
+# CAD 页 /raw 的路径收敛单测（0.5.55 新增 —— **当时没接进自检**，
+# 又一个「检查器存在 ≠ 检查器在跑」的例子，本次补上）
+if [ -n "${PY:-}" ]; then
+  if "$PY" "$(dirname "$0")/test_cad_raw.py" >/dev/null 2>&1; then
+    echo "   ✅ CAD /raw 路径收敛单测通过（含编码解码与软链绕过）"
+  else
+    echo "   ❌ CAD /raw 路径收敛单测失败（跑 $(dirname "$0")/test_cad_raw.py 看详情）"; FAILED=1
+  fi
+else
+  echo "   ⚠️  本机没有 python，跳过 CAD /raw 路径收敛单测"
 fi
 # body 代理判定矩阵单测（用桩引擎，不依赖 docker）
 if [ -n "${PY:-}" ]; then
@@ -475,6 +557,17 @@ echo "-- 同步日志 --"
 sed 's/^/   /' "$TRIM_PKGVAR/fv-volumes.log" 2>/dev/null
 
 rm -rf "$T"
+
+echo
+echo "== CAD 断言自身的阳性/阴性对照 =="
+# ⚠️ 断言本身也要有对照 —— 但**故意不在这里自动跑**：
+#    negtest_cad_assert.sh 要跑 8 个用例、上百次 grep/awk 子进程，在 Git Bash 上要 1~2 分钟；
+#    实测与本脚本并发/串行跑时容易被环境掐断（SIGTERM），变成一个**时灵时不灵的检查项** ——
+#    那比没有更糟（会给出假的失败）。
+#    所以它是**开发期手动跑**的工具：改了下面那组 CAD 断言之后，手动执行一次确认
+#    「正常配置放行 + 7 类缺陷全部报出」。
+echo "   ℹ️  已改为手动执行：bash fpk/tools/negtest_cad_assert.sh"
+echo "      （改了上面的 CAD 断言后请手动跑一次；不自动跑的原因见本行上方的注释）"
 
 echo
 if [ "$FAILED" -eq 0 ]; then echo "✅ 全部自检通过"; else echo "❌ 有自检项失败"; fi
