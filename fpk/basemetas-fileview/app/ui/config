@@ -77,27 +77,6 @@
         "pathPerm": "hidden",
         "fullUrlPerm": "hidden"
       }
-    },
-    "basemetas-fileview.cad": {
-      "title": "用 CAD 预览打开",
-      "icon": "images/icon_{0}.png",
-      "type": "iframe",
-      "protocol": "",
-      "gatewayPrefix": "/app/basemetas-fileview",
-      "gatewaySocket": "app.sock",
-      "url": "/app/basemetas-fileview/cad/",
-      "allUsers": true,
-      "fileTypes": [
-        "dwg",
-        "dxf"
-      ],
-      "noDisplay": true,
-      "control": {
-        "accessPerm": "editable",
-        "portPerm": "hidden",
-        "pathPerm": "hidden",
-        "fullUrlPerm": "hidden"
-      }
     }
   }
 }

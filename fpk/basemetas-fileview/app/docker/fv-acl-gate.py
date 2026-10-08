@@ -214,31 +214,6 @@ def can_read(uid, path):
 
 
 # ---------------------------------------------------------------------------
-# /raw 用：把请求里的路径收敛成一个**真实存在的普通文件**（不合法返回 None）
-# ---------------------------------------------------------------------------
-# ⚠️ /raw 是「把文件字节交出去」的能力 —— 比闸门原有的「放行/拒绝」**更强**，
-#    所以这里按最严处理：
-#      · 必须绝对路径且以 /vol 开头（与闸门其它地方同一个约定）
-#      · 路径里不允许出现 `..`（realpath 之后还会再核一次前缀）
-#      · realpath 之后必须**仍在 /vol 下** —— 挡住符号链接绕过
-#      · 必须是普通文件（不给目录、设备节点）
-def safe_real_file(path):
-    if not path or not path.startswith("/vol"):
-        return None
-    if ".." in path.split("/"):
-        return None
-    try:
-        real = os.path.realpath(path)
-    except Exception:
-        return None
-    if not real.startswith("/vol"):
-        return None
-    if not os.path.isfile(real):
-        return None
-    return real
-
-
-# ---------------------------------------------------------------------------
 # 运行模式（每次请求现读，改完立刻生效，不用重启容器）
 # ---------------------------------------------------------------------------
 def conf_value(key, default):
@@ -616,66 +591,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         return self._forward(uri, uid, body, "不可读（当前 body_guard=log，仅记录）", path)
 
-    # -----------------------------------------------------------------------
-    # /raw —— CAD 预览页读**原文件**（dwg/dxf 的字节）
-    # -----------------------------------------------------------------------
-    # ⚠️ 这里**不能**只靠 nginx 的 auth_request /__acl：
-    #    auth_request 是子请求，$arg_filePath 在子请求里不一定可用，
-    #    而本闸门在「解析不到路径」时是 **fail-open（放行）** ——
-    #    那样等于给整个应用开了个任意文件读取的后门。
-    #    所以：身份与路径由 nginx 直接传进来（X-Acl-Uid / X-Acl-File），
-    #    **由本服务自己判定**，并且**判定不了就拒绝（fail-closed）** ——
-    #    与闸门其它地方的 fail-open 有意不同：这是新增的"交出字节"能力，宁可拒绝。
-    def _raw(self):
-        uid = (self.headers.get("X-Acl-Uid") or "").strip()
-        raw = (self.headers.get("X-Acl-File") or "").strip()
-        # ⚠️ nginx 的 `$arg_xxx` 是**未解码**的原始值 —— 页面发的是
-        #    `?filePath=%2Fvol1%2F...`，这里收到的就是 `%2Fvol1...` ✗
-        #    （0.5.56 真机就是卡在这：路径不以 /vol 开头 → 400）
-        #    所以必须**解码一次**。只解一次是安全的：解完立刻走下面的严格校验
-        #    （前缀 / 拒绝 .. / realpath 后仍须在 /vol 下），双重编码绕不过去。
-        path = urllib.parse.unquote(raw) if raw else ""
-        real = safe_real_file(path)
-        if real is None:
-            why = "empty"
-            if not path:
-                why = "no X-Acl-File"
-            elif not path.startswith("/vol"):
-                why = "not under /vol"
-            elif ".." in path.split("/"):
-                why = "contains .."
-            elif not os.path.isfile(os.path.realpath(path)):
-                why = "not an existing regular file (in this container's view)"
-            log("raw 拒绝：%s | uid=%s raw=%r decoded=%r" % (why, uid or "-", raw[:120], path[:120]))
-            return self._plain(400, "bad path: %s | %s" % (why, path[:200]))
-        if not uid.isdigit():
-            log("raw 拒绝：拿不到身份 path=%s" % real)
-            return self._plain(403, "no identity")
-        verdict = can_read(int(uid), real)
-        if verdict is not True:
-            log("raw 拒绝：uid=%s path=%s verdict=%s" % (uid, real, verdict))
-            return self._plain(403, "forbidden")
-        try:
-            size = os.path.getsize(real)
-        except OSError:
-            return self._plain(404, "not found")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(size))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.end_headers()
-        try:
-            with open(real, "rb") as fh:
-                while True:
-                    chunk = fh.read(262144)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        log("raw 放行：uid=%s path=%s size=%d" % (uid, real, size))
-
     def _plain(self, code, msg):
         body = (msg + "\n").encode("utf-8")
         self.send_response(code)
@@ -690,8 +605,6 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/guard"):
             self._guard()
-        elif self.path.startswith("/raw"):
-            self._raw()
         else:
             self._handle()
 

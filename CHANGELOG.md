@@ -8,6 +8,73 @@
 
 ---
 
+## 0.5.58
+
+**CAD 图纸（DWG/DXF）彻底移出本应用** —— 改由**独立的飞牛应用**承接：
+[**fnos-cadviewer**](https://github.com/bug-yu/fnos-cadviewer)
+（[下载最新版](https://github.com/bug-yu/fnos-cadviewer/releases/latest)）。
+
+### 做了什么
+
+| 位置 | 处理 |
+|---|---|
+| 入口 `basemetas-fileview.cad`（「用 CAD 预览打开」） | **删除** —— 本应用不再注册 `dwg` / `dxf`，右键菜单里也不会再出现本应用 |
+| `fpk/cad-viewer/`（页面源码 + 构建脚本） | **删除**，只留一个 `README.md` 指路牌 |
+| `app/docker/cad/`（页面/JS/WASM/101 个字体文件，约 79 MB） | **删除**（本来就是构建产物，不进仓库） |
+| `nginx.conf` 的 `/cad/` 静态 location | **删除** |
+| `nginx.conf` 的 `/cad/api/raw` | **删除** |
+| 闸门 `fv-acl-gate.py` 的 `/raw` 端点 + `safe_real_file()` | **删除** |
+| `fpk/tools/negtest_cad_assert.sh`、`fpk/tools/test_cad_raw.py` | **删除** |
+| `fpk/tools/selfcheck.sh` 的 CAD 断言 | 从「必须存在」改成**反向断言**「必须不存在」 |
+| `app/ui/config` 注册的扩展名 | 61 种 → **59 种**（去掉 dwg / dxf） |
+
+### 体积：**54.6 MB → ~231 KB**（×1/236）
+
+这就是当初把它内嵌进来的代价 —— CAD 页要带字体（54 MB）+ LibreDWG WASM（9.5 MB），
+而这 55 MB **只为 `dwg`/`dxf` 两个格式服务**，却要**所有用户**都下载。
+
+### 顺带收回一个攻击面
+
+`/cad/api/raw` 是闸门里**唯一**「把文件字节交出去」的接口（比原有的「放行/拒绝」**更强**），
+唯一使用者就是内嵌的 CAD 页。既然摘掉了 CAD，就把这个能力**一并收回** ✓
+（nginx location、闸门处理、路径收敛函数全部删除；详见 SECURITY.md 第 10 节）
+
+> ⚠️ 这不是"删掉一个功能"，而是**少了一个端点** —— 收益，不是损失。
+
+### 为什么移出（不只是体积）
+
+1. **职责**：本应用是「全格式预览」，CAD 是其中一个专业子集 ——
+   依赖栈（Vue 3 / element-plus / LibreDWG）、发版节奏、许可（LibreDWG 是 **GPL-3.0**）都不一样。
+2. **避免打两份**：两个应用各内置一份 cad-viewer 的话，字体与 WASM 要打两遍，
+   而且两份会各自漂版本。
+3. **独立应用更全**：除了右键预览的简易查看器，还有**桌面图标的完整版**
+   （菜单 / 功能区 / 命令行 / 状态栏），字体从 86 个增加到 **101 个**，
+   NAS 文件走官方 `pickUserFile` / `openAppAuth` 授权。
+
+### 自检改成反向断言（防止回潮）
+
+摘掉之后如果哪次改动又把它带回来（从旧分支合并、照旧文档重加），
+**功能上不会报错**，只会让包悄悄胖回 54 MB ✗。所以自检反过来断言：
+
+```
+✅ nginx.conf 已无 /cad/ location（CAD 已移出）
+✅ nginx.conf 已无 aclgate/raw
+✅ 闸门已无 /raw（交字节的能力已收回）
+✅ app/ui/config 已无 .cad 入口
+✅ app/ui/config 未声明 dwg/dxf（CAD 交给独立应用）
+✅ app/docker/cad/ 不存在（CAD 资源已移出）
+```
+
+反向断言自身的对照很简单：手工往 `nginx.conf` / `config` 里塞回一行 `/cad/` 或 `dwg`，
+跑一次自检，确认它**报错**即可 ✓
+
+### 顺带修
+
+`selfcheck.sh` 里有一行注释被换行截断，第二行只剩一个「口」字 ——
+它会被当成命令执行，于是自检输出里混进一行 `口: command not found` ✗（已并回一行）。
+
+---
+
 ## 0.5.57
 
 修 **CAD 页取文件报 HTTP 400**。

@@ -31,13 +31,14 @@ ROOT = r"C:\Users\yang\WorkBuddy AI\2026-09-27-09-07-41\fnos-basemetas-fileview"
 KEEP = {
     "v0.5.29",   # 上一轮会话的稳定版
     "v0.5.50",   # 安全加固 + 预览体验整合版
-    "v0.5.54",   # 换 CAD 渲染器之前的最后一版
-    "v0.5.57",   # CAD 预览（cad-viewer）可用版
+    "v0.5.54",   # 换 CAD 渲染器之前的最后一版（不含 CAD 的最后形态）
+    "v0.5.57",   # CAD 预览（cad-viewer）内嵌的最后一版 —— CAD 已迁到独立应用，这版留着做对照
+    "v0.5.58",   # ★ CAD 彻底移出，包回到 ~231 KB
 }
 
 args = [a for a in sys.argv[1:] if not a.startswith("--")]
 PRUNE = "--prune" in sys.argv
-VER = args[0] if args else "0.5.57"
+VER = args[0] if args else "0.5.58"
 TAG = "v" + VER
 ASSETS = ["basemetas-fileview-%s-%s.fpk" % (VER, v) for v in ("desktop", "browser")]
 

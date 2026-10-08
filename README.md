@@ -14,7 +14,7 @@
 |---|---|---|
 | 定位 | 在线**编辑**（OnlyOffice） | **纯预览** |
 | 会不会改到文件 | 带编辑 + **修改自动保存** | **不会** —— 存储卷一律 `:ro` **只读**挂载，引擎**物理上无法写回**源文件 |
-| 格式覆盖 | Office 文档 | **61 种** —— DWG/DXF 图纸、OFD 版式、压缩包、三维模型、Visio、思维导图、PSD… |
+| 格式覆盖 | Office 文档 | **59 种** —— OFD 版式、压缩包、三维模型、Visio、思维导图、PSD…（CAD 图纸见下） |
 | 权限 | —— | 按飞牛 ACL **逐用户**判定，没读权限直接 403 |
 
 > **一句话**：**要改文件，用官方的 Office 预览；只是想看，用 FileView。**
@@ -23,49 +23,54 @@
 谁当默认由你在「应用设置 → 打开方式」里决定。
 **如果你也担心误改，把 Office 那几类也指给 FileView 就行。**
 
-## CAD（DWG/DXF）预览为什么是**另一个页面**
+## ⚠️ CAD 图纸（DWG/DXF）**已移出本应用** —— 请装独立应用「CAD 查看器」
 
-> ⚠️ **这里的 CAD 预览是「预览版」** —— 已验证可用，但**正式版会独立成一个应用**
-> （文件管理器预览调「简易查看器」、桌面图标调「完整版」，
-> 见 <https://github.com/bug-yu/fnos-cadviewer>）。
-> **本应用会保留这个预览能力，不会移除** —— 两者可以并存，也可以只装其中一个。
+> **0.5.58 起，本应用不再处理 `dwg` / `dxf`。** 右键菜单里也不会再出现本应用。
+> 要预览 CAD 图纸，请到应用中心安装**独立的飞牛应用**：
+>
+> ### 👉 [**fnos-cadviewer**](https://github.com/bug-yu/fnos-cadviewer) · [下载最新版](https://github.com/bug-yu/fnos-cadviewer/releases/latest)
 
-`dwg` / `dxf` **不走 FileView**，由独立的 CAD 预览页承接（入口「**用 CAD 预览打开**」）。
+独立应用做得比这里原来那份**更多**：
 
-原因 —— 真机对比同一张图：
-
-| | FileView 自带的 `cad2x` | cad-viewer |
+| | 本应用内嵌的版本（≤ 0.5.57） | 独立应用 fnos-cadviewer |
 |---|---|---|
-| **多重引线**（MULTILEADER） | **完全不显示** ✗ | 正常 ✓ |
-| **面域边框**（REGION） | 不显示 ✗ | 正常 ✓ |
-| **字体** | 失真严重 ✗ | 正常 ✓ |
+| 文件管理器右键预览 | ✅ 简易查看器 | ✅ 简易查看器 |
+| **桌面图标** | ❌ 没有 | ✅ **完整版**（菜单 / 功能区 / 命令行 / 状态栏） |
+| 打开 NAS 上的图纸 | ✅ | ✅ 走官方 `pickUserFile` / `openAppAuth` 授权 |
+| 打开本地文件 | ✅ | ✅ |
+| 字体 | 86 个 SHX | **101 个字体文件** |
+| 安装包体积 | 让本应用涨到 **54.6 MB** | 它自己 **55.7 MB**，本应用回到 **~231 KB** |
 
-**字体能正常的关键**：打包了 **86 个 SHX 字体**（来自 `mlightcad/cad-data`）——
-CAD 图纸用的是 SHX 而不是 TTF，之前 `cad2x` 根本没拿到这些字体。
+### 为什么移出
 
-### 组成
+1. **体积**：CAD 页要带字体（54 MB）+ LibreDWG WASM（9.5 MB）。
+   内嵌进来 → 本应用的包从 **231 KB 涨到 54.6 MB（×236）** ✗ ——
+   而这 55 MB **只为 dwg/dxf 两个格式服务**，却要**所有用户**都下载。
+2. **职责**：本应用是「全格式预览」，CAD 是其中一个专业子集 ——
+   两者的依赖栈（Vue 3 / element-plus / LibreDWG）、发版节奏、
+   许可（LibreDWG 是 **GPL-3.0**）都不一样。
+3. **避免打两份**：两个应用各内置一份 cad-viewer 的话，
+   字体与 WASM 要打两遍，而且两份会各自漂版本。
 
+### 想看原来的实现？
+
+在本仓库的 git 历史里：
+
+```bash
+git log --oneline -- fpk/cad-viewer | head
+git show <最后一个包含它的提交>:fpk/cad-viewer/build.py
 ```
-浏览器 ──► /app/basemetas-fileview/cad/           静态资源（页面/JS/WASM/字体，alias 直供、不挂鉴权）
-        └─► /app/basemetas-fileview/cad/api/raw   取**原文件** —— **过闸门**（见 SECURITY.md）
-```
 
-| 部分 | 说明 |
-|---|---|
-| 页面与资源 | `app/docker/cad/`，由 **`fpk/cad-viewer/build.py`** 生成（约 80 MB，**不进仓库**，`.gitignore` 已排除） |
-| 上游 | `mlightcad/cad-viewer`（MIT）+ `@mlightcad/libredwg-converter`（**GPL-3.0**）+ `mlightcad/cad-data` |
-| 自动加载 | 飞牛打开文件时会追加 `?path=<绝对路径>`，页面据此自动加载 |
-| **不依赖公网** | 官方示例默认从 `cdn.jsdelivr.net` 取字体/模板数据，本应用**全部本地化**打进包内 |
-
-> ⚠️ **打包前必须先跑** `python fpk/cad-viewer/build.py` ——
-> 否则 `app/docker/cad/` 是空的，装出来的包打不开 CAD 图。
-> （`build_variants.py` 会检查这个目录，缺了会拒绝打包。）
+> ℹ️ 移出时**顺手删掉了一个多余的能力**：内嵌 CAD 页曾需要一条
+> `/cad/api/raw`（把**文件字节**直接交给页面）。它是闸门里唯一
+> 「交出字节」的接口（比「放行/拒绝」更强），既然唯一使用者没了，
+> 就把它连同路径收敛函数一起**收回** —— 少一个攻击面 ✓（详见 SECURITY.md）
 
 ## 特性
 
 - **`.fpk` 原生安装** —— 应用中心「手动安装」上传即完成，带安装向导、启动/停止/设置，与飞牛自带「Office 预览」同一形态。
 - **统一网关接入** —— 不占用独立端口，复用系统访问域名（`/app/basemetas-fileview`），且网关会**先校验飞牛登录态**再转发。
-- **接管文件打开方式** —— 文件管理器右键出现「用 FileView 打开」，覆盖 61 种飞牛没有原生能力的格式（DWG/DXF 图纸、OFD 版式、三维模型、压缩包、Visio、思维导图、PSD 等）。打开方式可选：**在飞牛桌面窗口内**（默认）或**在浏览器标签页**，安装时二选一。
+- **接管文件打开方式** —— 文件管理器右键出现「用 FileView 打开」，覆盖 **59 种**飞牛没有原生能力的格式（OFD 版式、三维模型、压缩包、Visio、思维导图、PSD 等）。打开方式可选：**在飞牛桌面窗口内**（默认）或**在浏览器标签页**，安装时二选一。⚠️ `dwg` / `dxf` 已移出，改由独立应用 [fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer) 承接。
 - **只读挂载** —— 存储卷一律 `:ro`，预览不会改动 NAS 里的任何文件。
 
 ## 目录结构
@@ -77,6 +82,7 @@ CAD 图纸用的是 SHX 而不是 TTF，之前 `cad2x` 根本没拿到这些字�
 | `fpk/build.bat` / `fpk/build.sh` | Windows / Linux 重新打包脚本 |
 | `fpk/tools/` | 生成脚本与自检工具（`build_variants.py`、`gen_filetypes.py`、`gen_icons.py`、`check_nginx_conf.py`、`check_nginx_map.py`、`test_acl_decide.py`、`test_welcome_redirect.py`、`verify_fpk.py`、`check_eol.sh`、`selfcheck.sh`） |
 | `fpk/tools/assets/` | 图标素材：`fileview-logo.png`（BaseMetas FileView 官网 logo）。`gen_icons.py` 用它一次生成 4 个图标文件 |
+| `fpk/cad-viewer/README.md` | ⚠️ **只有一份指路牌** —— CAD 预览页（DWG/DXF）已于 0.5.58 移出，改由独立应用 [fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer) 承接。原来的源码/构建脚本见 git 历史 |
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
@@ -114,11 +120,10 @@ Release 里提供**两个包**，功能完全一样，只差「打开方式」�
 
 ## 支持的文件类型
 
-飞牛把入口的扩展名列表写进一个**限长约 500 字符**的数据库列，超长会导致安装被数据库拒绝（界面只报「服务异常」）。因此「全量接管」物理上做不到，只能在额度内取舍。当前注册 **61 个扩展名（约 255 字符）**：
+飞牛把入口的扩展名列表写进一个**限长约 500 字符**的数据库列，超长会导致安装被数据库拒绝（界面只报「服务异常」）。因此「全量接管」物理上做不到，只能在额度内取舍。当前注册 **59 个扩展名（约 247 字符）**：
 
 | 分类 | 扩展名 |
 |---|---|
-| CAD / 工程图纸 | dwg dxf |
 | 版式文档 | pdf ofd |
 | 压缩包 | zip rar 7z tar tgz gz jar |
 | Visio / 流程图 / 导图 | vsd vsdm vsdx vssx vstx bpmn drawio xmind |
@@ -250,7 +255,7 @@ FileView 引擎容器  http://fileview:80/preview/view?path=/vol1/...
 > 现在默认放开到 1024 MB。
 
 **调多大合适**：PDF / 图片 / 代码等由浏览器端渲染，调大基本不增加服务端负担；
-Word / Excel / PPT / CAD / OFD 需要服务端转换，上限过大时预览大文件会明显吃 CPU 和内存，
+Word / Excel / PPT / OFD 需要服务端转换，上限过大时预览大文件会明显吃 CPU 和内存，
 请按 NAS 的内存情况取舍。
 
 > **引擎其实有「两道独立」的体积闸门**（0.5.54 起两道都可设置）：
@@ -335,7 +340,7 @@ VOLS="/vol1,/vol2,/vol3" bash tools/fv-repair.sh
 
 ```bash
 bash tools/fv-doctor.sh
-bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带检查某个具体文件能不能读
+bash tools/fv-doctor.sh --file /vol3/某文件.pdf    # 顺带检查某个具体文件能不能读
 ```
 
 ### 自定义字体
@@ -348,14 +353,16 @@ bash tools/fv-doctor.sh --file /vol3/某文件.dwg    # 顺带检查某个具体
 
 把字体文件放进 `/vol{n}/@appdata/basemetas-fileview/fonts/` 后重启引擎容器即可。
 
-> 请使用正规渠道取得授权的字体。思源系列（已内置）开源可商用；从 Windows 直接拷贝宋体/微软雅黑属授权灰色地带。DWG 图纸走的是浏览器端 SHX 字体，与本目录无关。
+> 请使用正规渠道取得授权的字体。思源系列（已内置）开源可商用；从 Windows 直接拷贝宋体/微软雅黑属授权灰色地带。
+> （CAD 图纸走的是浏览器端 SHX 字体，与本目录无关 —— 而且 0.5.58 起 CAD 已移出本应用，
+> 见 [独立应用 fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer)。）
 
 ### 数据与日志目录
 
 引擎的**工作目录**和**日志**都挂到了应用数据目录（`${TRIM_PKGVAR}`，即 `/vol{n}/@appdata/basemetas-fileview/`）：
 
 ```yaml
-- "${TRIM_PKGVAR}/data:/opt/fileview/data"    # 转换产物、解压临时文件、LibreOffice / CAD 工作目录
+- "${TRIM_PKGVAR}/data:/opt/fileview/data"    # 转换产物、解压临时文件、LibreOffice 工作目录（引擎内部还有 cad2x 目录，本应用已不用 CAD）
 - "${TRIM_PKGVAR}/logs:/opt/fileview/logs"    # preview 与 convert 两个服务的文件日志
 ```
 
@@ -666,7 +673,8 @@ filePath = cacheInfo.getOriginalFilePath();     // ← 不给 path 就用缓存�
 
 **升级后请按这个节奏做**：
 
-> ✅ **实机观察已完成（2026-10-07，0.5.50）**：跑了一遍全部预览类型（PDF / DWG / xlsx / ofd / 压缩包），
+> ✅ **实机观察已完成（2026-10-07，0.5.50）**：跑了一遍全部预览类型（PDF / DWG / xlsx / ofd / 压缩包 ——
+> 当时的 DWG 走的是内嵌的 CAD 页；0.5.58 起 CAD 已移出，见上文），
 > 闸门日志里**所有** `/preview/api/files/<fileId>` 请求**都带 `filePath`**，
 > 且 `grep -E "仅记录|观察"` **一条都没有** → **可以放心切 `enforce`**。
 
@@ -878,6 +886,7 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 | 版本 | 要点 |
 |---|---|
+| **0.5.58** | **CAD 图纸（DWG/DXF）彻底移出本应用** → 独立应用 [fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer)。删掉入口 `basemetas-fileview.cad`、`fpk/cad-viewer/` 源码与构建脚本、`app/docker/cad/` 资源（约 79 MB）、nginx 的 `/cad/` 与 `/cad/api/raw` 两条 location、闸门的 `/raw` 端点（**顺带收回「交出文件字节」这个能力，少一个攻击面**）。**安装包从 54.6 MB 回到 ~231 KB**。自检改成**反向断言**（这些痕迹必须不存在），防止从旧分支/旧文档带回来 |
 | **0.5.57** | 修 **CAD 页取文件报 HTTP 400** —— nginx 的 `$arg_filePath` 是**未解码**的原始值（页面发 `%2Fvol1%2F...`，闸门收到就是 `%2Fvol1...` → 不以 `/vol` 开头 ✗）→ 闸门里**解码一次**（双重编码绕不过去，已加测试）+ 把失败原因显示到界面 |
 | **0.5.56** | 修 **0.5.55 打开 CAD 文件时没自动加载**（钩子挂在懒初始化的  里，页面打开时永不触发）→ 挪到 （DOM 就绪即触发）+ 退避重试（worker 竞态）+ 没收到  时显示 URL 参数 |
 | **0.5.55** | **DWG/DXF 改用独立的 CAD 预览页**（开源 `mlightcad/cad-viewer`）—— 引擎自带的 cad2x 对**多重引线**、**面域边框**、**字体**还原都不行（真机对比）；新页面用 **LibreDWG** 解析 + **86 个 SHX 字体**，三项都正常。`dwg`/`dxf` 从 FileView 摘出，改由「用 CAD 预览打开」承接。**字体/模板打进包内、不依赖公网 CDN** ✓。新增 `/cad/api/raw` 读原文件，**由闸门自己判 ACL 且 fail-closed** ✓ |
@@ -900,5 +909,5 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 ## 已知限制
 
 - **Excel / CSV 首次打开需强制刷新一次**：上游 FileView 前端取文件时用了 `credentials: 'omit'`，在带鉴权的网关下会取不到文件。本包已在网关层用 `sub_filter` 改写回默认行为，但该 JS 带 hash 被浏览器缓存，需强刷（`Ctrl+F5`）一次后生效。
-- 大图纸（几十 MB 的 DWG）渲染性能官方无指标，建议实际测试。
+- 大图纸（几十 MB 的 DWG）渲染性能官方无指标，建议实际测试 —— 但 0.5.58 起 CAD 已移出本应用，这条请到 [fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer) 反馈。
 - 扩展名列表受约 500 字符上限约束，无法全量注册。
