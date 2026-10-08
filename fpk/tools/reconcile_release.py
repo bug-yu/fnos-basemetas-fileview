@@ -1,12 +1,19 @@
 # -*- coding: utf-8 -*-
-"""把某个版本的 Release 收敛到「只留它、且两个资产都在」。
+"""把某个版本的 Release 收敛到「资产齐全」，并按需清理。
 
-为什么单独写：`fpk/tools/release.py` 不是幂等的（它直接 POST 建 release，
-已存在就会 already_exists 失败）。而大资产上传（54MB×2）在不稳的网络上
+⚠️ 2026-10-08 用户要求：**阶段性的应用包要留在 GitHub 上** ✓
+   —— 所以本脚本**默认不删任何 Release** ✗（以前会删掉其它 Release ✗，
+   那是"只留最新"的旧策略，已废弃）。
+   确实要清理时显式加 `--prune`，且**只删不在 KEEP 名单里的**。
+
+为什么单独写这个脚本：`fpk/tools/release.py` 不是幂等的（它直接 POST 建 release，
+已存在就会 already_exists 失败）。而大资产上传（50MB×2）在不稳的网络上
 很容易中途断（0.5.56 就断了：release 建了、资产 0 个 ✗）。
 本脚本可以**反复跑**，直到状态正确。
 
-用法：python reconcile_release.py 0.5.56
+用法：
+  python reconcile_release.py 0.5.57            # 只补资产，不删任何东西
+  python reconcile_release.py 0.5.57 --prune    # 顺便清理（只留 KEEP 名单里的）
 """
 import json
 import os
@@ -19,7 +26,18 @@ import urllib.request
 
 REPO = "bug-yu/fnos-basemetas-fileview"
 ROOT = r"C:\Users\yang\WorkBuddy AI\2026-09-27-09-07-41\fnos-basemetas-fileview"
-VER = sys.argv[1] if len(sys.argv) > 1 else "0.5.56"
+
+# 要保留的里程碑版本（--prune 时只留这些）
+KEEP = {
+    "v0.5.29",   # 上一轮会话的稳定版
+    "v0.5.50",   # 安全加固 + 预览体验整合版
+    "v0.5.54",   # 换 CAD 渲染器之前的最后一版
+    "v0.5.57",   # CAD 预览（cad-viewer）可用版
+}
+
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
+PRUNE = "--prune" in sys.argv
+VER = args[0] if args else "0.5.57"
 TAG = "v" + VER
 ASSETS = ["basemetas-fileview-%s-%s.fpk" % (VER, v) for v in ("desktop", "browser")]
 
@@ -105,11 +123,14 @@ for name in ASSETS:
         print("    ✗ 失败：HTTP %s %s" % (st, d[:200]))
 
 print()
-print("③ 删掉其它 Release")
-for r in list_releases():
-    if r["tag_name"] != TAG:
-        st, _ = api("DELETE", "https://api.github.com/repos/%s/releases/%s" % (REPO, r["id"]))
-        print("  删 %s → HTTP %s" % (r["tag_name"], st))
+if PRUNE:
+    print("③ 清理（只留 KEEP 名单里的）")
+    for r in list_releases():
+        if r["tag_name"] not in KEEP:
+            st, _ = api("DELETE", "https://api.github.com/repos/%s/releases/%s" % (REPO, r["id"]))
+            print("  删 %s → HTTP %s" % (r["tag_name"], st))
+else:
+    print("③ 不动其它 Release —— 阶段性的应用包要留着 ✓（真要清理加 --prune）")
 
 print()
 print("④ 最终状态")
