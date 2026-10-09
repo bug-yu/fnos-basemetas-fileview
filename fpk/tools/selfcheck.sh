@@ -528,6 +528,20 @@ sed 's/^/   /' "$TRIM_PKGVAR/fv-volumes.log" 2>/dev/null
 rm -rf "$T"
 
 echo
+echo "== 发版脚本：tag 必须钉在本地 HEAD 上 =="
+# ⚠️ 0.5.58 踩过：release.py 建 Release 时**没给 target_commitish**，
+#    GitHub 就把 tag 落在「远端默认分支当时的位置」上；而当时本地那个
+#    「删 CAD」的提交还没 push → tag 钉在了删 CAD **之前**的提交上 ✗
+#    → Release 页的 Source code 压缩包、以及线上 README 全是旧的 ✗
+#    修法：① 显式 target_commitish=<HEAD> ② 发版前拦住「有未推送提交」。
+if grep -qF '"target_commitish": head_sha' "$(dirname "$0")/release.py" 2>/dev/null \
+   && grep -qF '@{u}..HEAD' "$(dirname "$0")/release.py" 2>/dev/null; then
+  echo "   ✅ release.py 已把 tag 钉到 HEAD，且会拦住「未推送就发版」"
+else
+  echo "   ❌ release.py 缺 target_commitish=<HEAD> 或未检查未推送提交（tag 会指到旧提交）"; FAILED=1
+fi
+
+echo
 echo "== CAD 断言自身的阳性/阴性对照 =="
 # （原来这里提示手动跑 negtest_cad_assert.sh 做阳/阴性对照。
 #   0.5.58 起 CAD 整体移出本应用，那组断言改成了**反向断言**（必须不存在），

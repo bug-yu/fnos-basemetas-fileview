@@ -16,6 +16,31 @@ REPO = "bug-yu/fnos-basemetas-fileview"
 ROOT = r"C:\Users\yang\WorkBuddy AI\2026-09-27-09-07-41\fnos-basemetas-fileview"
 
 
+def git(*args):
+    """跑一条 git 命令，返回 (退出码, stdout, stderr)。"""
+    p = subprocess.run(["git"] + list(args), cwd=ROOT,
+                       capture_output=True, text=True, timeout=180)
+    return p.returncode, p.stdout.strip(), p.stderr.strip()
+
+
+def remote_tag_sha(tag):
+    """远端同名 tag 指向的**提交**（注解 tag 取 peeled 值）；不存在返回 None。"""
+    rc, out, _ = git("ls-remote", "--tags", "origin",
+                     "refs/tags/%s" % tag, "refs/tags/%s^{}" % tag)
+    if not out:
+        return None
+    plain = None
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) != 2:
+            continue
+        sha, ref = parts
+        if ref.endswith("^{}"):
+            return sha          # peeled = 真正的提交对象
+        plain = sha
+    return plain
+
+
 def token():
     p = subprocess.run(["git", "credential", "fill"], cwd=ROOT,
                        input="protocol=https\nhost=github.com\n\n",
@@ -68,6 +93,34 @@ def main():
     ver = sys.argv[1].lstrip("v")
     tag = "v" + ver
 
+    # ⚠️⚠️ 发版前必须确认「分支已推送」+「tag 指向 HEAD」——
+    #     GitHub 建 Release 时如果不给 target_commitish，就会把 tag 落在
+    #     **远端默认分支当时的位置**上；而远端可能还停在旧提交 ✗
+    #     0.5.58 就这么踩过：本地已提交「删 CAD」，但没 push → tag 钉在了
+    #     删 CAD **之前**的提交上 → Release 的源码包是旧代码（README 还是旧的）✗
+    rc, head_sha, _ = git("rev-parse", "HEAD")
+    if rc != 0 or not head_sha:
+        print("❌ 取不到 HEAD（不在 git 仓库里？）")
+        return 1
+
+    rc, ahead, _ = git("log", "--oneline", "@{u}..HEAD")
+    if ahead:
+        print("❌ 有**未推送**的提交 —— 远端默认分支还停在旧位置：")
+        for line in ahead.splitlines():
+            print("     " + line)
+        print("   先 `git push origin <分支>` 再发版，否则 tag 会建在旧提交上 ✗")
+        return 1
+
+    old = remote_tag_sha(tag)
+    if old and old != head_sha:
+        print("⚠️ 远端 tag %s 指向 %s，而 HEAD 是 %s —— 先删掉它按 HEAD 重建"
+              % (tag, old[:8], head_sha[:8]))
+        rc, _, err = git("push", "origin", ":refs/tags/%s" % tag)
+        if rc != 0:
+            print("❌ 删远端 tag 失败：%s" % err[:200])
+            return 1
+        print("   ✅ 远端 tag 已删（下面重建时会指到 %s）" % head_sha[:8])
+
     st, me = api("GET", "https://api.github.com/user")
     print("凭据：HTTP %s（%s）" % (st, me.get("login") if st == 200 else str(me)[:120]))
     if st != 200:
@@ -84,6 +137,7 @@ def main():
     body = one_line(ver)
     st, rel = api("POST", "https://api.github.com/repos/%s/releases" % REPO, {
         "tag_name": tag, "name": tag, "body": body,
+        "target_commitish": head_sha,      # ★ 显式钉到 HEAD，别让 GitHub 猜
         "draft": False, "prerelease": False,
     })
     if st not in (200, 201):
