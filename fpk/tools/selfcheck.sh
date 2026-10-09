@@ -81,6 +81,39 @@ DET="$(fv_detect_volumes)"
 echo "  detect          -> [$DET]   期望 [/vol1,/vol2,/vol3]"
 [ "$DET" = "/vol1,/vol2,/vol3" ] || { echo "  ❌ 探测结果不符"; FAILED=1; }
 
+# ⚠️⚠️ 带前导零的卷号（远程挂载 / 外接存储落在 /vol0X）—— 2026-10-09 真机反馈
+#    旧写法有**两处**会把它吃掉，都必须保持修好：
+#      ① fv_dir_volumes 只列 /vol[1-9]…        → /vol02 这类目录探不到
+#      ② sort -n -u 把 /vol2 与 /vol02 当同一个 → /vol02 被静默去重掉
+#    后果：/vol02 不进 compose 挂载段 → 容器看不到 → 远程挂载的文件必然预览失败 ✗
+fv_mounts_volumes() { printf '/vol1\n/vol02\n'; }
+fv_dir_volumes()    { printf '/vol1\n/vol2\n/vol02\n/vol3\n'; }
+DET2="$(fv_detect_volumes)"
+echo "  detect(含/vol02)-> [$DET2]   期望 [/vol1,/vol02,/vol2,/vol3]"
+[ "$DET2" = "/vol1,/vol02,/vol2,/vol3" ] \
+  || { echo "  ❌ /vol02 被吃掉了（远程挂载/外接存储会预览不了）"; FAILED=1; }
+
+# canon 也必须能区分 /vol2 与 /vol02 —— 否则「容器少了 /vol02」会被判成一致 ✗
+# （这正是这个 bug 最隐蔽的地方：挂载核对完全看不出来）
+CA="$(printf '/vol1,/vol2,/vol02' | fv_canon_vols)"
+CB="$(printf '/vol1,/vol2' | fv_canon_vols)"
+echo "  canon           -> [$CA]   少了 /vol02 时 -> [$CB]"
+[ "$CA" != "$CB" ] \
+  || { echo "  ❌ canon 把 /vol2 与 /vol02 当成同一个 → 少挂 /vol02 也判定「一致」"; FAILED=1; }
+
+# 行为测试上面把 fv_dir_volumes 打桩了，所以**真实实现**也要单独断言一次
+# （否则实现退回「只认无前导零」时，打桩测试照样绿 ✗）
+if grep -qE 'for d in /vol\[0-9\]' "$BASE/app/docker/fv-volumes.sh"; then
+  echo "   ✅ fv_dir_volumes 卷号模式允许前导零（/vol0X 能探到）"
+else
+  echo "   ❌ fv_dir_volumes 又变回「只认无前导零」→ /vol02 探不到"; FAILED=1
+fi
+if grep -qF 'sort -k1,1n -k2,2 -u' "$BASE/app/docker/fv-volumes.sh"; then
+  echo "   ✅ 卷列表去重用「数字+完整路径」两个键（/vol2 与 /vol02 不会被合并）"
+else
+  echo "   ❌ 卷列表去重又用回 sort -n -u → /vol02 会被静默吃掉"; FAILED=1
+fi
+
 # 还原真实实现，再冒烟 normalize / resolve
 . "$BASE/app/docker/fv-volumes.sh"
 echo "  auto            -> [$(fv_resolve_volumes auto)]"
