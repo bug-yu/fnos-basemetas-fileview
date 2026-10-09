@@ -956,13 +956,6 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 > 这个应用是业余时间做的，代码与文档都开源。如果它帮你省了事，可以请我喝杯咖啡 ☕
 > —— **不打赏也完全不影响使用**，功能上不会有任何区别。
 
-<details>
-<summary>展开收款码（微信 / 支付宝）</summary>
-
-<br>
-
 | 微信支付 | 支付宝 |
 |:---:|:---:|
 | <img src=".github/sponsor/wechat.png" width="230" alt="微信收款码"> | <img src=".github/sponsor/alipay.png" width="230" alt="支付宝收款码"> |
-
-</details>
