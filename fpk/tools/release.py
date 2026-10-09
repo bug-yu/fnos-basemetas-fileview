@@ -111,15 +111,23 @@ def main():
         print("   先 `git push origin <分支>` 再发版，否则 tag 会建在旧提交上 ✗")
         return 1
 
+    # ⚠️⚠️ **不要「先删远端 tag 再重建」** ✗ —— 删掉 tag 会让 GitHub 把对应的
+    #    Release 变成 `untagged-<hash>`（**丢掉 tag 关联**），只能再用 API PATCH 回去 ✗
+    #    （cadviewer 0.4.3 就这么变成过一个游离 Release）
+    #    直接 `git push -f` 覆盖 tag 即可，Release 的关联不会断 ✓
     old = remote_tag_sha(tag)
-    if old and old != head_sha:
-        print("⚠️ 远端 tag %s 指向 %s，而 HEAD 是 %s —— 先删掉它按 HEAD 重建"
-              % (tag, old[:8], head_sha[:8]))
-        rc, _, err = git("push", "origin", ":refs/tags/%s" % tag)
+    if old != head_sha:
+        rc, _, err = git("tag", "-f", tag, head_sha)
         if rc != 0:
-            print("❌ 删远端 tag 失败：%s" % err[:200])
+            print("❌ 本地 tag 重指失败：%s" % err[:200])
             return 1
-        print("   ✅ 远端 tag 已删（下面重建时会指到 %s）" % head_sha[:8])
+        rc, _, err = git("push", "-f", "origin", tag)
+        if rc != 0:
+            print("❌ 推 tag 失败：%s" % err[:200])
+            return 1
+        print("   ✅ tag %s → %s（原 %s）" % (tag, head_sha[:8], (old or "无")[:8]))
+    else:
+        print("   ✅ tag %s 已指向 HEAD（%s）" % (tag, head_sha[:8]))
 
     st, me = api("GET", "https://api.github.com/user")
     print("凭据：HTTP %s（%s）" % (st, me.get("login") if st == 200 else str(me)[:120]))
