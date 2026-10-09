@@ -542,6 +542,38 @@ else
 fi
 
 echo
+echo "== 打赏入口：FUNDING.yml 的锚点必须与 README 对得上 =="
+# ⚠️ 仓库头部的「Sponsor ❤」按钮走的是 .github/FUNDING.yml 里的 custom 链接，
+#    而链接末尾是 README 里的锚点。README 用的是**显式** `<a id="sponsor"></a>`
+#    （不是中文标题自动生成的那种 —— 那种一改标题就断 ✗）。
+#    失败模式很隐蔽：锚点被改名后按钮还在，点下去却只是跳到 README 顶部，**不报错** ✗
+#    所以这里断言「FUNDING.yml 里的 #锚点」在 README 里真有对应的 <a id="...">。
+FUNDING="$(cd "$(dirname "$0")/../.." && pwd)/.github/FUNDING.yml"
+README_MD="$(cd "$(dirname "$0")/../.." && pwd)/README.md"
+if [ -f "$FUNDING" ] && [ -f "$README_MD" ]; then
+  anchor="$(grep -oE '#[A-Za-z0-9_-]+"' "$FUNDING" | head -1 | tr -d '#"')"
+  if [ -n "$anchor" ] && grep -qF "<a id=\"$anchor\"></a>" "$README_MD"; then
+    echo "   ✅ FUNDING.yml 的 #$anchor 在 README 里有对应的 <a id=\"$anchor\">"
+  else
+    echo "   ❌ FUNDING.yml 的锚点 [$anchor] 在 README 里找不到 <a id=\"$anchor\"></a>（按钮会静默失效）"; FAILED=1
+  fi
+  if grep -qE '^[[:space:]]*custom:.*#' "$FUNDING"; then
+    echo "   ✅ custom 链接带锚点（点了能直接落到打赏小节）"
+  else
+    echo "   ❌ custom 链接没带锚点（点了只会到仓库首页）"; FAILED=1
+  fi
+  for img in wechat alipay; do
+    if [ -f "$(dirname "$FUNDING")/sponsor/$img.png" ]; then
+      echo "   ✅ 收款码图片存在：.github/sponsor/$img.png"
+    else
+      echo "   ❌ 缺收款码图片 .github/sponsor/$img.png（README 里会显示破图）"; FAILED=1
+    fi
+  done
+else
+  echo "   ℹ️  没有 .github/FUNDING.yml，跳过（未启用打赏入口）"
+fi
+
+echo
 echo "== CAD 断言自身的阳性/阴性对照 =="
 # （原来这里提示手动跑 negtest_cad_assert.sh 做阳/阴性对照。
 #   0.5.58 起 CAD 整体移出本应用，那组断言改成了**反向断言**（必须不存在），

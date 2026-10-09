@@ -1,0 +1,10 @@
+# 打赏 / 赞助入口 —— 仓库头部会出现「Sponsor ❤」按钮，点了跳到 README 的打赏小节。
+#
+# ⚠️ FUNDING.yml **只能放链接，不能放图片** —— 收款码（微信 / 支付宝）在 README 的
+#    `#sponsor` 小节里，图片本体在 `.github/sponsor/`。
+# ⚠️ 锚点用的是 README 里**显式**写的 `<a id="sponsor"></a>`，
+#    不是中文标题自动生成的那种（那种一改标题就断）。
+# ⚠️ GitHub Sponsors 的收款地区**不含中国大陆**（列表里有 Hong Kong / Macao SAR，
+#    没有 China）→ 所以这里只挂 custom 链接，不挂 `github:`。
+# ⚠️ 还需要在 仓库 Settings → General → Features → Sponsorships 打勾，按钮才会出现。
+custom: ["https://github.com/bug-yu/fnos-basemetas-fileview#sponsor"]

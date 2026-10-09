@@ -915,3 +915,22 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 - **Excel / CSV 首次打开需强制刷新一次**：上游 FileView 前端取文件时用了 `credentials: 'omit'`，在带鉴权的网关下会取不到文件。本包已在网关层用 `sub_filter` 改写回默认行为，但该 JS 带 hash 被浏览器缓存，需强刷（`Ctrl+F5`）一次后生效。
 - 大图纸（几十 MB 的 DWG）渲染性能官方无指标，建议实际测试 —— 但 0.5.58 起 CAD 已移出本应用，这条请到 [fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer) 反馈。
 - 扩展名列表受约 500 字符上限约束，无法全量注册。
+
+---
+
+<a id="sponsor"></a>
+## 打赏 / 支持这个项目
+
+> 这个应用是业余时间做的，代码与文档都开源。如果它帮你省了事，可以请我喝杯咖啡 ☕
+> —— **不打赏也完全不影响使用**，功能上不会有任何区别。
+
+<details>
+<summary>展开收款码（微信 / 支付宝）</summary>
+
+<br>
+
+| 微信支付 | 支付宝 |
+|:---:|:---:|
+| <img src=".github/sponsor/wechat.png" width="230" alt="微信收款码"> | <img src=".github/sponsor/alipay.png" width="230" alt="支付宝收款码"> |
+
+</details>
