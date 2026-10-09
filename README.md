@@ -912,8 +912,6 @@ python fpk/tools/build_variants.py --only browser  # 只打某一个
 
 ## 已知限制
 
-- **Excel / CSV 首次打开需强制刷新一次**：上游 FileView 前端取文件时用了 `credentials: 'omit'`，在带鉴权的网关下会取不到文件。本包已在网关层用 `sub_filter` 改写回默认行为，但该 JS 带 hash 被浏览器缓存，需强刷（`Ctrl+F5`）一次后生效。
-- 大图纸（几十 MB 的 DWG）渲染性能官方无指标，建议实际测试 —— 但 0.5.58 起 CAD 已移出本应用，这条请到 [fnos-cadviewer](https://github.com/bug-yu/fnos-cadviewer) 反馈。
 - 扩展名列表受约 500 字符上限约束，无法全量注册。
 
 ---
