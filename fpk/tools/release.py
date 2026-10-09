@@ -111,10 +111,42 @@ def main():
         print("   先 `git push origin <分支>` 再发版，否则 tag 会建在旧提交上 ✗")
         return 1
 
-    # ⚠️⚠️ **不要「先删远端 tag 再重建」** ✗ —— 删掉 tag 会让 GitHub 把对应的
-    #    Release 变成 `untagged-<hash>`（**丢掉 tag 关联**），只能再用 API PATCH 回去 ✗
-    #    （cadviewer 0.4.3 就这么变成过一个游离 Release）
-    #    直接 `git push -f` 覆盖 tag 即可，Release 的关联不会断 ✓
+    st, me = api("GET", "https://api.github.com/user")
+    print("凭据：HTTP %s（%s）" % (st, me.get("login") if st == 200 else str(me)[:120]))
+    if st != 200:
+        return 1
+
+    # ⚠️⚠️⚠️ 顺序很关键：**必须先删掉已有的 Release，再动 tag** ✗
+    #   只要一个 tag 上**挂着 Release**，无论你是「删掉 tag」还是「push -f 移动 tag」，
+    #   GitHub 都会把这个 Release 改成 `untagged-<hash>`（**丢掉 tag 关联**）✗
+    #   而且改名是**异步**的 —— 用 API PATCH 把 tag_name 改回去，过一会儿还会被再改一次 ✗
+    #   （cadviewer 0.4.3 连踩两次：先删 tag → 游离；改成 push -f → **还是**游离）
+    #   所以：先把 Release 删掉（此时 tag 上没有挂东西）→ 再动 tag → 最后重建 Release ✓
+    st, rel = api("GET", "https://api.github.com/repos/%s/releases/tags/%s" % (REPO, tag))
+    if st == 200:
+        print("已存在 Release id=%s，先删重建（幂等）" % rel["id"])
+        api("DELETE", "https://api.github.com/repos/%s/releases/%s" % (REPO, rel["id"]))
+    elif st != 404:
+        print("查询异常 HTTP %s" % st)
+        return 1
+
+    # 顺手清理历史遗留的游离 Release（tag 被改名后留下的 `untagged-*`，
+    # 里面若含本应用的资产，就一并删掉，别在 Release 页上堆着）
+    # ⚠️ 注意 `api()` **已经把 JSON 解析好了**（返回 list/dict，不是 bytes）——
+    #    再套一层 `json.loads` 会报 "not list" ✗（0.5.59 就这么崩过一次，
+    #    而且是在**删掉 Release 之后**崩的 → 留下一个没有 Release 的 tag ✗）
+    st, rels = api("GET", "https://api.github.com/repos/%s/releases?per_page=100" % REPO)
+    if not isinstance(rels, list):
+        print("   ⚠️ 取 Release 列表失败（HTTP %s），跳过清理与去重" % st)
+        rels = []
+    for x in rels:
+        if str(x.get("tag_name", "")).startswith("untagged-"):
+            names = [a["name"] for a in x.get("assets", [])]
+            if any(n.startswith("basemetas-fileview-") for n in names):
+                api("DELETE", "https://api.github.com/repos/%s/releases/%s"
+                    % (REPO, x["id"]))
+                print("   🧹 清掉游离 Release id=%s（%s）" % (x["id"], x["tag_name"]))
+
     old = remote_tag_sha(tag)
     if old != head_sha:
         rc, _, err = git("tag", "-f", tag, head_sha)
@@ -129,19 +161,6 @@ def main():
     else:
         print("   ✅ tag %s 已指向 HEAD（%s）" % (tag, head_sha[:8]))
 
-    st, me = api("GET", "https://api.github.com/user")
-    print("凭据：HTTP %s（%s）" % (st, me.get("login") if st == 200 else str(me)[:120]))
-    if st != 200:
-        return 1
-
-    st, rel = api("GET", "https://api.github.com/repos/%s/releases/tags/%s" % (REPO, tag))
-    if st == 200:
-        print("已存在 Release id=%s，先删重建（幂等）" % rel["id"])
-        api("DELETE", "https://api.github.com/repos/%s/releases/%s" % (REPO, rel["id"]))
-    elif st != 404:
-        print("查询异常 HTTP %s" % st)
-        return 1
-
     body = one_line(ver)
     st, rel = api("POST", "https://api.github.com/repos/%s/releases" % REPO, {
         "tag_name": tag, "name": tag, "body": body,
@@ -153,6 +172,17 @@ def main():
         return 1
     print("✅ Release 已建：%s" % rel["html_url"])
     print("   说明：%s" % body.splitlines()[0][:70])
+
+    # 去重自愈：同一个 tag 上**只应有一个 Release**。
+    # 一旦出现过「GET /releases/tags/<tag> 返回 404、于是又建了一个」的情况，
+    # 就会留下两个同名 Release ✗ —— 这里把除刚建的这个以外的都删掉 ✓
+    st, again = api("GET", "https://api.github.com/repos/%s/releases?per_page=100" % REPO)
+    if isinstance(again, list):
+        for x in again:
+            if x.get("tag_name") == tag and x["id"] != rel["id"]:
+                api("DELETE", "https://api.github.com/repos/%s/releases/%s"
+                    % (REPO, x["id"]))
+                print("   🧹 清掉重复的 %s Release id=%s" % (tag, x["id"]))
 
     rid, ok = rel["id"], 0
     for variant in ("desktop", "browser"):
