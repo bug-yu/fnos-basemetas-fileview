@@ -105,9 +105,13 @@ echo "  目录(/volN)        ：${DIRS:-（无）}"
 if [ -n "${VOLS:-}" ]; then
   echo "  使用手工指定的卷列表（VOLS）：$VOLS"
 else
+  # ⚠️ 去重必须按「数字 + 完整路径」两个键 —— 只用 `sort -n -u` 时
+  #    /vol2 与 /vol02 的数字键都是 2，会被当成重复，**/vol02 被静默吃掉** ✗
+  #    而 /vol0X 正是「远程挂载 / 外接存储」所在的命名空间 →
+  #    这个修复脚本会漏挂它，跑了也修不好「远程挂载预览不了」（0.5.59 修）
   VOLS="$( { printf '%s\n' $MNT; printf '%s\n' $DIRS; } 2>/dev/null \
            | awk -F'/' '/^\/vol[0-9]+$/ {n=$2; sub(/^vol/, "", n); print n "\t" $0}' \
-           | sort -n -u | cut -f2 | tr '\n' ',' | sed 's/,$//' )"
+           | sort -k1,1n -k2,2 -u | cut -f2 | tr '\n' ',' | sed 's/,$//' )"
 fi
 [ -n "$VOLS" ] || VOLS="/vol1"
 echo "  最终要挂载：$VOLS"

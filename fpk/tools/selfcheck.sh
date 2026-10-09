@@ -114,6 +114,24 @@ else
   echo "   ❌ 卷列表去重又用回 sort -n -u → /vol02 会被静默吃掉"; FAILED=1
 fi
 
+# ⚠️ 同一个 bug 在别处也会有 —— 直接**全仓库扫描**，不逐个文件点名
+#    （0.5.59 就是这么又抓到一处：tools/fv-repair.sh 的「一键修复」脚本里
+#     也用了裸 sort -n -u，跑了也修不好「远程挂载预览不了」✗）
+#    判据：去掉注释后再看还有没有 `sort -n -u`（注释里解释这个坑是允许的）
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+BAD_SORT="$(grep -rn 'sort -n -u' --include='*.sh' --include='*.py' "$REPO_ROOT" 2>/dev/null \
+            | grep -v '/_release-backup/' \
+            | grep -v 'tools/selfcheck.sh' \
+            | sed 's/^[^:]*:[0-9]*://; s/#.*//' \
+            | grep 'sort -n -u' || true)"
+if [ -z "$BAD_SORT" ]; then
+  echo "   ✅ 全仓库没有裸 sort -n -u 去重（卷号去重都用两个键）"
+else
+  echo "   ❌ 还有地方用裸 sort -n -u 去重卷号（/vol02 会被静默吃掉）："
+  printf '%s\n' "$BAD_SORT" | sed 's/^/      /'
+  FAILED=1
+fi
+
 # 还原真实实现，再冒烟 normalize / resolve
 . "$BASE/app/docker/fv-volumes.sh"
 echo "  auto            -> [$(fv_resolve_volumes auto)]"
