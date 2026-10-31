@@ -8,6 +8,7 @@
 #   ③ 引擎容器**实际**的挂载里有没有它（bind 挂载只在容器创建时确定）
 #   ④ 引擎容器里能不能看到它、能不能读到文件
 #   ⑤ 应用用户能不能操作 docker（决定「保存设置自动重建容器」是否真的生效）
+#   ⑥ 容器命名空间里有没有 .zfs 快照挂载副本（有的话飞牛删不掉这些 ZFS 快照）
 #
 # 用法：
 #   bash fv-doctor.sh
@@ -174,6 +175,37 @@ else
   inf "（跳过：没有 docker 命令）"
 fi
 
+say "4b. ZFS 快照目录 .zfs —— 会不会让飞牛删不掉快照（2026-10-31 真机反馈）"
+# 现象：飞牛「文件快照」删 ZFS 快照提示「系统繁忙」，或 zfs destroy 报
+#       cannot destroy snapshot ...: dataset is busy，而 holds / clones 都是空的。
+# 真因：Docker 的 bind 是**递归的（rbind）**。容器**创建那一刻**宿主上已挂载的
+#       <卷>/.zfs/snapshot/<快照> 会被复制进容器自己的 mount namespace，
+#       这份副本一直在 → 内核认为快照仍被挂载 → zfs destroy 一律 EBUSY。
+# 所以宿主视角查不出来：mount 卸干净了、lsof/fuser 也没有、holds 全空，
+# 引用藏在**别的 namespace** 里，要 grep /proc/*/mountinfo 才看得见。
+HOST_SNAP="$(awk '$3 ~ /\/\.zfs\/snapshot\// {c++} END{print c+0}' /proc/mounts 2>/dev/null)"
+inf "宿主上已挂载的快照（/volN/.zfs/snapshot/*）：${HOST_SNAP:-0}"
+NS_HOLD="$(grep -l "zfs/snapshot" /proc/[0-9]*/mountinfo 2>/dev/null | wc -l | tr -d ' ')"
+inf "mount namespace 里带着快照挂载的进程数：${NS_HOLD:-0}"
+if [ "${HOST_SNAP:-0}" -eq 0 ] && [ "${NS_HOLD:-0}" -eq 0 ]; then
+  ok "宿主与各命名空间都没有快照挂载（快照可以被正常删除）"
+fi
+if command -v docker >/dev/null 2>&1; then
+  # 判据取「容器自己看到的挂载数」：非 0 就说明副本进了容器，会一直 pin 住快照。
+  C_SNAP="$(docker exec "$ENGINE" sh -c "cat /proc/self/mounts 2>/dev/null | grep -c '\.zfs/snapshot'" 2>/dev/null | tr -d ' ')"
+  if [ -n "$C_SNAP" ] && [ "$C_SNAP" != "0" ]; then
+    bad "引擎容器命名空间里有 ${C_SNAP} 个 .zfs 快照挂载副本"
+    inf "  → 后果：这些快照在 ZFS 侧永久处于「被挂载」状态，飞牛里删不掉"
+    inf "    （表现是「系统繁忙」，命令行则是 dataset is busy；holds/clones 却都是空的）"
+    inf "  → 修法： bash tools/fv-zfs-snapfix.sh"
+    VERDICT+=("引擎容器持有 .zfs 快照挂载副本（飞牛将无法删除这些 ZFS 快照）")
+  elif [ -n "$C_SNAP" ]; then
+    ok "引擎容器里没有 .zfs 快照挂载副本"
+  else
+    inf "（读不到容器内的挂载表：容器没在运行？）"
+  fi
+fi
+
 say "5. 引擎容器内部实测（宿主 vs 容器逐卷对比）"
 if command -v docker >/dev/null 2>&1; then
   for v in $DIR_VOLS; do
@@ -286,6 +318,7 @@ else
   echo
   inf "修复："
   inf "  bash tools/fv-repair.sh          # 按宿主机真实卷重写挂载段并重建容器"
+  inf "  bash tools/fv-zfs-snapfix.sh     # 容器持有 .zfs 快照副本、飞牛删不掉快照时用"
   inf "或 应用「设置」→ 存储卷填 auto → 保存（0.5.7 起会立刻重建容器）"
 fi
 echo

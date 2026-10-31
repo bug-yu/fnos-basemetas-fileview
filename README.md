@@ -90,6 +90,7 @@ git show <最后一个包含它的提交>:fpk/cad-viewer/build.py
 | `tools/fv-repair.sh` | NAS 上一键修复脚本（存储卷 / 网关重启故障） |
 | `tools/fv-doctor.sh` | NAS 上一键**诊断**脚本（只读，定位「某个盘预览不了」卡在哪一环） |
 | `tools/fv-uninstall-fix.sh` | NAS 上一键修复「卸载报 Request failed」的卡死状态 |
+| `tools/fv-zfs-snapfix.sh` | NAS 上一键修复「ZFS 快照删不掉」（容器持有了 `.zfs` 快照挂载副本） |
 | `tools/fv-acl-check.sh` | NAS 上验证「按用户判定文件权限」是否可行（含对照组，只读） |
 | `CHANGELOG.md` | 版本更新说明 |
 
@@ -379,6 +380,54 @@ VOLS="/vol1,/vol2,/vol3" bash tools/fv-repair.sh
 bash tools/fv-doctor.sh
 bash tools/fv-doctor.sh --file /vol3/某文件.pdf    # 顺带检查某个具体文件能不能读
 ```
+
+#### ZFS 快照删不掉（飞牛「文件快照」里点删除提示「系统繁忙」）
+
+**现象**：ZFS 存储卷上的快照怎么都删不掉。飞牛「文件快照」点删除只弹一句「系统繁忙」，
+系统日志里是「将存储空间 N 的快照清空。成功数量：0，失败数量：1」；
+手工删则报 `cannot destroy snapshot <池>@<快照>: dataset is busy`。
+
+**真因**：Docker 的 bind 挂载是**递归的（`rbind`）**。本应用容器**创建的那一刻**，
+宿主上已经挂着的 `<卷>/.zfs/snapshot/<快照>` 会被**一并复制进容器自己的 mount namespace**。
+这份副本只要容器不重建就一直存在，内核据此认为快照仍然「被挂载」→ `zfs destroy` 一律 `EBUSY`。
+
+所以从宿主视角怎么查都查不出来，容易误判成权限或别的问题：
+
+| 查什么 | 结果 | 为什么看不出来 |
+|---|---|---|
+| `mount \| grep .zfs/snapshot` | 卸干净了 | 副本在**别的 namespace** |
+| `lsof` / `fuser` | 没有进程打开 | 同上，且没有真正的文件占用 |
+| `zfs holds` / `zfs get clones` | 全空 | 这是**语义**占用，和**物理**挂载是两码事 |
+| `zfs get userrefs` | 0 | 同上 |
+
+要看见它只能 grep 所有进程的挂载表：
+
+```bash
+grep -l "zfs/snapshot" /proc/[0-9]*/mountinfo
+```
+
+**修法**（root）：
+
+```bash
+bash tools/fv-zfs-snapfix.sh            # 检测 → 卸载宿主快照挂载 → 重建容器 → 复验
+bash tools/fv-zfs-snapfix.sh --check    # 只诊断，不改任何东西
+```
+
+脚本会卸载宿主上的 `.zfs/snapshot/*` 挂载（普通卸载失败再退回 `umount -l`），
+然后按 `config/resource` 声明的项目名重建本应用容器，最后复验容器内副本数为 0。
+期间应用会中断几秒；正在浏览「以前的版本」的 SMB 客户端可能闪一次错误，ZFS 会按需重挂。
+
+**不做这两件事会复发**（`fv-zfs-snapfix.sh` 不改变根因，只是修好当下）：
+
+1. **关掉 SMB 的影子副本 / 以前的版本**（不用就关）。Windows 客户端一枚举「以前的版本」，
+   smbd 就会把快照挂到 `.zfs/snapshot` 下，宿主的快照挂载数是几百个起步 ——
+   容器随便重建一次就会把这一大串带进 namespace。
+2. **快照保留策略别按小时无限攒**。几百条时飞牛那个「清空」按钮本身就会**超时**
+   （前端把它显示成「系统繁忙」），跟本应用无关；而容器一旦持有副本，
+   逐条 `zfs destroy` 也会全部 `dataset is busy`。
+
+> 顺带一个事实：`zfs` 删除**被挂载的快照**一律拒绝，这是内核规则，不是本应用的缺陷 ——
+> 本应用能做的是「不去持有那些挂载」，也就是上面这一套。
 
 ### 自定义字体
 
